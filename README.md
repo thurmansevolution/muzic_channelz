@@ -12,7 +12,7 @@
 Requires Docker and Docker Compose. Builds a Debian-based image (tagged as `1.0`).
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/muzic-channelz.git
+git clone https://github.com/thurmansevolution/muzic_channelz.git
 cd muzic-channelz
 docker compose up -d
 ```
@@ -26,7 +26,7 @@ Then open **http://localhost:8484**. Data (channels, backgrounds, logs) is store
 - **Python 3.11+**, **Node 18+** (for frontend build), **FFmpeg**
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/muzic-channelz.git
+git clone https://github.com/thurmansevolution/muzic_channelz.git
 cd muzic-channelz
 python -m venv .venv
 source .venv/bin/activate
@@ -35,7 +35,6 @@ cd frontend && npm install && npm run build && cd ..
 uvicorn app.main:app --host 0.0.0.0 --port 8484
 ```
 
-Replace `YOUR_USERNAME` with your GitHub username or org.
 
 ---
 
@@ -48,7 +47,7 @@ Replace `YOUR_USERNAME` with your GitHub username or org.
 | **Background Editor** | Upload images, place overlays (song, artist, art, bio), assign to channels |
 | **Live Logs**    | Per-channel FFmpeg and app logs |
 
-Data lives under `data/` (channels, backgrounds, logs). Back up that folder to keep your setup.
+Data lives under `data/` (channels, backgrounds, logs).
 
 ---
 
