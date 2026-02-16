@@ -1,0 +1,15 @@
+[Unit]
+Description=muzic channelz - music channel streaming
+After=network.target
+
+[Service]
+Type=simple
+User=mediaserver
+WorkingDirectory=/home/mediaserver/muzic-channelz
+Environment="PATH=/home/mediaserver/muzic-channelz/.venv/bin:/usr/local/bin:/usr/bin"
+ExecStart=/home/mediaserver/muzic-channelz/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8484
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

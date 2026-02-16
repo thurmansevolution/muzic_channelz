@@ -1,0 +1,31 @@
+[project]
+name = "muzic-channelz"
+version = "0.1.0"
+description = "Music channel streaming with overlay and Azuracast integration"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "python-multipart>=0.0.18",
+    "httpx>=0.28",
+    "pydantic>=2.10",
+    "pydantic-settings>=2.6",
+    "aiosqlite>=0.20",
+    "pillow>=11.0",
+    "aiofiles>=24.1",
+    "websockets>=14.1",
+    "jinja2>=3.1",
+    "cairosvg>=2.7",
+    "psutil>=6.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio", "ruff"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]

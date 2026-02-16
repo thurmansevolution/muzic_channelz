@@ -1,0 +1,14 @@
+services:
+  muzic-channelz:
+    image: muzic-channelz:1.0
+    build: .
+    ports:
+      - "8484:8484"
+    environment:
+      - MUZIC_PORT=8484
+    volumes:
+      - muzic-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  muzic-data: {}

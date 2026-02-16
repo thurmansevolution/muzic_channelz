@@ -1,0 +1,163 @@
+"""Administration API: state, start/stop service, backup/restore."""
+from __future__ import annotations
+
+import base64
+import json
+import shutil
+
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+
+from app.config import settings
+from app.ffmpeg_runner import get_channel_log_path
+from app.models import AdminState, BackgroundTemplate
+from app.store import load_admin_state, save_admin_state, load_backgrounds, save_backgrounds
+from app import services
+
+router = APIRouter(prefix="/api/admin", tags=["admin"])
+
+
+@router.get("/state", response_model=AdminState)
+async def get_state() -> AdminState:
+    """Return admin state with service_started and channel running state reflecting actual process state (so after server restart the UI shows correct status)."""
+    state = await load_admin_state()
+    state.service_started = any(services.is_running(c.id) for c in state.channels)
+    return state
+
+
+def _ensure_unique_channel_ids(state: AdminState) -> AdminState:
+    """Ensure every channel has a unique id so streams and now-playing don't collide."""
+    import uuid
+    seen: set[str] = set()
+    channels = list(state.channels)
+    for i, ch in enumerate(channels):
+        cid = (ch.id or "").strip()
+        if not cid or cid in seen:
+            new_id = str(uuid.uuid4())[:8]
+            while new_id in seen:
+                new_id = str(uuid.uuid4())[:8]
+            seen.add(new_id)
+            channels[i] = ch.model_copy(update={"id": new_id})
+        else:
+            seen.add(cid)
+    return state.model_copy(update={"channels": channels})
+
+
+@router.put("/state", response_model=AdminState)
+async def put_state(state: AdminState) -> AdminState:
+    state = _ensure_unique_channel_ids(state)
+    old_state = await load_admin_state()
+    old_ids = {c.id for c in old_state.channels if c.id}
+    new_ids = {c.id for c in state.channels if c.id}
+    removed_ids = old_ids - new_ids
+    for channel_id in removed_ids:
+        await services.stop_channel(channel_id)
+        stream_dir = settings.data_dir / "streams" / channel_id
+        if stream_dir.exists():
+            try:
+                shutil.rmtree(stream_dir)
+            except OSError:
+                pass
+        log_path = get_channel_log_path(channel_id)
+        if log_path.exists():
+            try:
+                log_path.unlink()
+            except OSError:
+                pass
+    await save_admin_state(state)
+    return state
+
+
+@router.post("/start-service")
+async def start_service() -> dict:
+    """Start all music channels."""
+    from app.ffmpeg_runner import append_app_log
+    results = await services.start_all_channels()
+    state = await load_admin_state()
+    state.service_started = True
+    await save_admin_state(state)
+    append_app_log("service started (all channels)")
+    return {"ok": True, "channels": results}
+
+
+@router.post("/stop-service")
+async def stop_service() -> dict:
+    """Stop all channel processes."""
+    from app.ffmpeg_runner import append_app_log
+    await services.stop_all_channels()
+    state = await load_admin_state()
+    state.service_started = False
+    await save_admin_state(state)
+    append_app_log("service stopped (all channels)")
+    return {"ok": True}
+
+
+@router.get("/backup")
+async def export_backup(include_images: bool = True) -> JSONResponse:
+    """Export full config backup: admin state + backgrounds index + optional base64 background images."""
+    state = await load_admin_state()
+    backgrounds = await load_backgrounds()
+    payload = {
+        "version": 1,
+        "admin_state": state.model_dump(),
+        "backgrounds": [b.model_dump() for b in backgrounds],
+        "background_images": {},
+    }
+    if include_images and settings.backgrounds_dir:
+        root = settings.backgrounds_dir
+        for b in backgrounds:
+            if b.is_stock or not b.image_path:
+                continue
+            path = root / b.image_path
+            if path.exists():
+                try:
+                    payload["background_images"][b.id] = base64.b64encode(path.read_bytes()).decode("ascii")
+                except OSError:
+                    pass
+    return JSONResponse(content=payload)
+
+
+class RestoreBody(BaseModel):
+    """Request body for POST /api/admin/restore."""
+
+    admin_state: dict
+    backgrounds: list[dict]
+    background_images: dict[str, str] = {}
+
+
+@router.post("/restore")
+async def restore_backup(body: RestoreBody) -> dict:
+    """Restore full config from a backup. Stops the service, writes state and backgrounds (and images if provided)."""
+    await services.stop_all_channels()
+
+    state_restored = AdminState.model_validate(body.admin_state)
+    state_restored.service_started = False
+    await save_admin_state(state_restored)
+
+    root = settings.backgrounds_dir or settings.data_dir / "backgrounds"
+    root.mkdir(parents=True, exist_ok=True)
+    for bid, b64 in (body.background_images or {}).items():
+        try:
+            raw = base64.b64decode(b64, validate=True)
+        except Exception:
+            continue
+        bg = next((b for b in body.backgrounds if b.get("id") == bid), None)
+        if not bg or bg.get("is_stock") or not bg.get("image_path"):
+            continue
+        path = root / bg["image_path"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(raw)
+
+    templates = [BackgroundTemplate.model_validate(b) for b in (body.backgrounds or [])]
+    await save_backgrounds(templates)
+
+    return {"ok": True, "message": "Configuration restored. Start the service to apply."}
+
+
+@router.delete("/metadata-cache")
+async def clear_metadata_cache() -> dict:
+    """Clear the local metadata cache (artist bios and images). Next play of each artist will fetch from providers again."""
+    from app.metadata_cache import clear_cache
+    success, message = clear_cache()
+    return {"ok": success, "message": message}
