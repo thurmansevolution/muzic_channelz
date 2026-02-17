@@ -36,7 +36,7 @@ def _get_profile(state: AdminState, profile_id: str) -> FFmpegProfile | None:
     return state.ffmpeg_profiles[0] if state.ffmpeg_profiles else None
 
 
-async def _watch_ffmpeg_exit(channel_id: str, proc: asyncio.subprocess.Process) -> None:
+async def _watch_ffmpeg_exit(channel_id: str, proc: asyncio.subprocess.Process, used_hw_accel: bool = False) -> None:
     """Wait for FFmpeg process to exit; if it was not a requested stop, log and auto-restart once after delay."""
     try:
         returncode = await proc.wait()
@@ -61,6 +61,8 @@ async def _watch_ffmpeg_exit(channel_id: str, proc: asyncio.subprocess.Process) 
         if channel_id in _last_auto_restart_time and (now - _last_auto_restart_time[channel_id]) < 120:
             delay = 60
         append_app_log(f"channel {channel_id} FFmpeg exited unexpectedly (code={returncode}). Will auto-restart in {delay}s.")
+        if returncode != 0 and used_hw_accel:
+            append_app_log(f"channel {channel_id} was using hardware encoding; exit may be due to GPU/accel failure. Consider software encoding or MUZIC_FFMPEG_FORCE_SOFTWARE=1.")
         await asyncio.sleep(delay)
         if channel_id in _running:
             return
@@ -300,11 +302,19 @@ async def _start_single_channel(channel: Channel, state: AdminState, index: int)
     except Exception:
         pass
 
+    out_w = settings.output_width
+    out_h = settings.output_height
+
+    def _sx(x: int) -> int:
+        return int(round(x * out_w / 1280))
+    def _sy(y: int) -> int:
+        return int(round(y * out_h / 720))
+
     def to_px_x(x: int) -> int:
-        return int(x * 19.2) if placements_from_editor and x <= 100 else x
+        return int(x * out_w / 100) if placements_from_editor and x <= 100 else x
 
     def to_px_y(y: int) -> int:
-        return int(y * 10.8) if placements_from_editor and y <= 100 else y
+        return int(y * out_h / 100) if placements_from_editor and y <= 100 else y
 
     def norm_color(c: str) -> str:
         c = (c or "white").strip()
@@ -317,24 +327,25 @@ async def _start_single_channel(channel: Channel, state: AdminState, index: int)
     artist_pl = get_placement(placements, "artist_name") or (placements[1] if len(placements) > 1 else None)
     bio_pl = get_placement(placements, "artist_bio")
     image_pl = get_placement(placements, "artist_image")
-    ch_name_x = to_px_x(channel_name_pl.x) if channel_name_pl else 40
-    ch_name_y = to_px_y(channel_name_pl.y) if channel_name_pl else 40
-    ch_name_fs = channel_name_pl.font_size if channel_name_pl and channel_name_pl.font_size else 28
+    # Fallbacks in output-resolution pixels (1280×720 base)
+    ch_name_x = to_px_x(channel_name_pl.x) if channel_name_pl else _sx(27)
+    ch_name_y = to_px_y(channel_name_pl.y) if channel_name_pl else _sy(27)
+    ch_name_fs = channel_name_pl.font_size if channel_name_pl and channel_name_pl.font_size else 20
     ch_name_fc = norm_color(channel_name_pl.font_color) if channel_name_pl else "white"
     ch_name_sc = norm_color(channel_name_pl.shadow_color) if channel_name_pl else "black"
-    song_x = to_px_x(song_pl.x) if song_pl else 80
-    song_y = to_px_y(song_pl.y) if song_pl else 520
-    song_fs = song_pl.font_size if song_pl and song_pl.font_size else 34
+    song_x = to_px_x(song_pl.x) if song_pl else _sx(80)
+    song_y = to_px_y(song_pl.y) if song_pl else _sy(520)
+    song_fs = song_pl.font_size if song_pl and song_pl.font_size else 32
     song_fc = norm_color(song_pl.font_color) if song_pl else "white"
     song_sc = norm_color(song_pl.shadow_color) if song_pl else "black"
-    artist_x = to_px_x(artist_pl.x) if artist_pl else 80
-    artist_y = to_px_y(artist_pl.y) if artist_pl else 560
+    artist_x = to_px_x(artist_pl.x) if artist_pl else _sx(80)
+    artist_y = to_px_y(artist_pl.y) if artist_pl else _sy(598)
     artist_fs = artist_pl.font_size if artist_pl and artist_pl.font_size else 28
     artist_fc = norm_color(artist_pl.font_color) if artist_pl else "white"
     artist_sc = norm_color(artist_pl.shadow_color) if artist_pl else "black"
-    bio_x_default = 500
-    bio_y_default = 280
-    bio_fs_default = 24
+    bio_x_default = _sx(520)
+    bio_y_default = _sy(270)
+    bio_fs_default = 26
     await write_now_playing_files(out_dir, channel, state)
     channel_name_txt = out_dir / "channel_name.txt"
     channel_name_txt.write_text((channel.name or channel.slug or channel.id or "Channel").strip() or "—", encoding="utf-8")
@@ -354,7 +365,15 @@ async def _start_single_channel(channel: Channel, state: AdminState, index: int)
     if not audio_url:
         cmd.append("-re")
 
-    if profile.hardware_accel and profile.hw_accel_type != "none":
+    from app.config import settings as _settings
+    from app.ffmpeg_runner import append_app_log
+    force_sw = getattr(_settings, "ffmpeg_force_software", False)
+    use_hw = profile.hardware_accel and profile.hw_accel_type != "none" and not force_sw
+    if use_hw:
+        try:
+            append_app_log(f"Channel {channel.id}: using hardware encoding ({profile.hw_accel_type})")
+        except Exception:
+            pass
         if profile.hw_accel_type == "nvenc":
             cmd.extend(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"])
             video_codec = "h264_nvenc"
@@ -379,6 +398,13 @@ async def _start_single_channel(channel: Channel, state: AdminState, index: int)
             video_codec = profile.video_codec
     else:
         video_codec = profile.video_codec
+        try:
+            if force_sw:
+                append_app_log(f"Channel {channel.id}: using software encoding (MUZIC_FFMPEG_FORCE_SOFTWARE=1 or hardware disabled)")
+            else:
+                append_app_log(f"Channel {channel.id}: using software encoding (profile has hardware_accel disabled)")
+        except Exception:
+            pass
 
     if audio_url:
         cmd.extend([
@@ -420,7 +446,7 @@ async def _start_single_channel(channel: Channel, state: AdminState, index: int)
     bio_x_param = f"x={bio_x}"
     def overlay_hidden(pl) -> bool:
         return pl is not None and getattr(pl, "hidden", False)
-    vf_parts = ["scale=1920:1080"]
+    vf_parts = [f"scale={out_w}:{out_h}"]
     if not overlay_hidden(channel_name_pl):
         vf_parts.append(f"drawtext=textfile='{cn_path}':reload=1:x={ch_name_x}:y={ch_name_y}:fontsize={ch_name_fs}:fontcolor={ch_name_fc_esc}:shadowcolor={ch_name_sc_esc}:shadowx=1:shadowy=1")
     if not overlay_hidden(song_pl):
@@ -435,16 +461,21 @@ async def _start_single_channel(channel: Channel, state: AdminState, index: int)
     image_visible = image_pl and not overlay_hidden(image_pl)
     if image_pl and not art_ready:
         try:
-            from PIL import Image
-            w = int(image_pl.width * 19.2) if placements_from_editor and image_pl.width and image_pl.width <= 100 else (image_pl.width or 230)
-            h = int(image_pl.height * 10.8) if placements_from_editor and image_pl.height and image_pl.height <= 100 else (image_pl.height or 230)
-            w, h = max(40, min(w, 1920)), max(40, min(h, 1080))
-            img = Image.new("RGB", (w, h), (0x2a, 0x2a, 0x2a))
-            img.save(art_path, "PNG")
-            try:
-                append_metadata_log(channel.id, "Art at startup: no image, using gray placeholder")
-            except Exception:
-                pass
+            from app.now_playing import _default_art_path, _ensure_placeholder_art
+            default_art = _default_art_path()
+            if default_art:
+                import shutil
+                shutil.copy2(default_art, art_path)
+                try:
+                    append_metadata_log(channel.id, "Art at startup: no image, using default icon")
+                except Exception:
+                    pass
+            else:
+                _ensure_placeholder_art(art_path)
+                try:
+                    append_metadata_log(channel.id, "Art at startup: no image, using placeholder")
+                except Exception:
+                    pass
         except Exception as e:
             _log.warning("Channel %s: failed to create art placeholder: %s", channel.id, e)
     elif image_pl and art_ready:
@@ -457,10 +488,10 @@ async def _start_single_channel(channel: Channel, state: AdminState, index: int)
         _log.debug("Channel %s using background: %s", channel.id, bg_path)
         cmd.extend(["-loop", "1", "-framerate", "25", "-i", str(bg_path)])
         if art_path.exists() and image_visible:
-            art_w = int(image_pl.width * 19.2) if placements_from_editor and image_pl.width and image_pl.width <= 100 else (image_pl.width or 230)
-            art_h = int(image_pl.height * 10.8) if placements_from_editor and image_pl.height and image_pl.height <= 100 else (image_pl.height or 230)
-            art_w = max(40, min(art_w, 1920))
-            art_h = max(40, min(art_h, 1080))
+            art_w = int(image_pl.width * out_w / 100) if placements_from_editor and image_pl.width and image_pl.width <= 100 else (image_pl.width or 230)
+            art_h = int(image_pl.height * out_h / 100) if placements_from_editor and image_pl.height and image_pl.height <= 100 else (image_pl.height or 230)
+            art_w = max(40, min(art_w, out_w))
+            art_h = max(40, min(art_h, out_h))
             art_x = to_px_x(image_pl.x) if image_pl.x is not None else 40
             art_y = to_px_y(image_pl.y) if image_pl.y is not None else 140
             cmd.extend(["-f", "image2", "-stream_loop", "-1", "-framerate", "1", "-i", str(art_path)])
@@ -476,15 +507,15 @@ async def _start_single_channel(channel: Channel, state: AdminState, index: int)
         else:
             _log.warning("Channel %s: background file missing: %s; using solid color.", channel.id, bg_path)
         cmd.append("-re")
-        if profile.hardware_accel and profile.hw_accel_type in ("vaapi", "qsv"):
-            cmd.extend(["-f", "lavfi", "-i", "color=c=0x1e3a5f:s=1920x1080:r=25:format=yuv420p"])
+        if use_hw and profile.hw_accel_type in ("vaapi", "qsv"):
+            cmd.extend(["-f", "lavfi", "-i", f"color=c=0x1e3a5f:s={out_w}x{out_h}:r=25:format=yuv420p"])
         else:
-            cmd.extend(["-f", "lavfi", "-i", "color=c=0x1e3a5f:s=1920x1080:r=25"])
+            cmd.extend(["-f", "lavfi", "-i", f"color=c=0x1e3a5f:s={out_w}x{out_h}:r=25"])
         if art_path.exists() and image_visible:
-            art_w = int(image_pl.width * 19.2) if placements_from_editor and image_pl.width and image_pl.width <= 100 else (image_pl.width or 230)
-            art_h = int(image_pl.height * 10.8) if placements_from_editor and image_pl.height and image_pl.height <= 100 else (image_pl.height or 230)
-            art_w = max(40, min(art_w, 1920))
-            art_h = max(40, min(art_h, 1080))
+            art_w = int(image_pl.width * out_w / 100) if placements_from_editor and image_pl.width and image_pl.width <= 100 else (image_pl.width or 230)
+            art_h = int(image_pl.height * out_h / 100) if placements_from_editor and image_pl.height and image_pl.height <= 100 else (image_pl.height or 230)
+            art_w = max(40, min(art_w, out_w))
+            art_h = max(40, min(art_h, out_h))
             art_x = to_px_x(image_pl.x) if image_pl.x is not None else 40
             art_y = to_px_y(image_pl.y) if image_pl.y is not None else 140
             cmd.extend(["-f", "image2", "-stream_loop", "-1", "-framerate", "1", "-i", str(art_path)])
@@ -504,7 +535,7 @@ async def _start_single_channel(channel: Channel, state: AdminState, index: int)
         "-b:v", profile.video_bitrate,
     ])
 
-    if not profile.hardware_accel or profile.hw_accel_type == "none":
+    if not use_hw:
         cmd.extend(["-preset", profile.preset])
     elif profile.hw_accel_type == "nvenc":
         _nvenc_preset = {
@@ -567,7 +598,7 @@ async def _start_single_channel(channel: Channel, state: AdminState, index: int)
             now_playing_loop(channel.id, out_dir, load_admin_state, 10.0, stop_ev, on_song_change=None)
         )
         _now_playing_tasks[channel.id] = task
-        watch_task = asyncio.create_task(_watch_ffmpeg_exit(channel.id, proc))
+        watch_task = asyncio.create_task(_watch_ffmpeg_exit(channel.id, proc, use_hw))
         _watch_tasks[channel.id] = watch_task
         return "ok"
     return "error: failed to start"

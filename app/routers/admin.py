@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import shutil
 
 from fastapi import APIRouter, HTTPException
@@ -72,13 +73,39 @@ async def put_state(state: AdminState) -> AdminState:
 @router.post("/start-service")
 async def start_service() -> dict:
     """Start all music channels."""
+    import traceback
     from app.ffmpeg_runner import append_app_log
-    results = await services.start_all_channels()
-    state = await load_admin_state()
-    state.service_started = True
-    await save_admin_state(state)
-    append_app_log("service started (all channels)")
-    return {"ok": True, "channels": results}
+    log = logging.getLogger("app.routers.admin")
+    try:
+        state = await load_admin_state()
+        enabled = [c for c in state.channels if c.enabled]
+        if not enabled:
+            return {
+                "ok": False,
+                "channels": {},
+                "message": "No enabled channels. Add a channel, assign a station and FFmpeg profile, enable it, Save, then Start service.",
+            }
+        results = await services.start_all_channels()
+        state = await load_admin_state()
+        state.service_started = any(services.is_running(c.id) for c in state.channels)
+        await save_admin_state(state)
+        started = sum(1 for v in results.values() if v == "ok")
+        failed = [cid for cid, v in results.items() if v != "ok"]
+        if started:
+            append_app_log(f"service started ({started} channel(s))")
+        if failed:
+            append_app_log(f"channel(s) failed to start: {', '.join(f'{c}: {results[c]}' for c in failed)}")
+        return {
+            "ok": bool(started),
+            "channels": results,
+            "message": f"Started {started} of {len(enabled)} channel(s)." if started else (
+                "No channel could be started. Check Live logs for FFmpeg errors and that each channel has a station and FFmpeg profile."
+            ),
+        }
+    except Exception as e:
+        log.exception("start-service failed")
+        append_app_log(f"start-service error: {e!s}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/stop-service")

@@ -18,8 +18,9 @@ export async function saveAdminState(state) {
 
 export async function startService() {
   const r = await fetch(`${BASE}/api/admin/start-service`, { method: 'POST' })
-  if (!r.ok) throw new Error(r.statusText)
-  return r.json()
+  const data = await r.json().catch(() => ({}))
+  if (!r.ok) throw new Error(data?.detail || data?.message || r.statusText)
+  return data
 }
 
 export async function stopService() {

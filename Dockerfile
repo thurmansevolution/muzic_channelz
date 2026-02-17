@@ -3,7 +3,7 @@
 FROM node:20-alpine AS frontend
 WORKDIR /app/frontend
 COPY frontend/package.json ./
-RUN npm install --omit=dev
+RUN npm install
 COPY frontend/ ./
 RUN npm run build
 
@@ -24,6 +24,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY app/ ./app/
+# Default artist icon when no image found (used by now_playing)
+COPY frontend/public/logo.png ./app/static/default-art.png
 COPY --from=frontend /app/frontend/dist ./frontend/dist
 
 ENV MUZIC_HOST=0.0.0.0

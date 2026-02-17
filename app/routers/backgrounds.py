@@ -43,14 +43,11 @@ async def list_backgrounds() -> list[dict]:
     return [stock, stock_dark] + out
 
 
-FEED_SIZE = (1920, 1080)
-
-
 def _resize_background_to_feed(path: Path) -> None:
-    """Resize image at path to 1920x1080 (fit and center on dark canvas). Overwrites the file."""
+    """Resize image at path to configured output size (fit and center on dark canvas). Overwrites the file."""
     from PIL import Image
     img = Image.open(path).convert("RGB")
-    w, h = FEED_SIZE[0], FEED_SIZE[1]
+    w, h = settings.output_width, settings.output_height
     if img.size == (w, h):
         return
     canvas = Image.new("RGB", (w, h), (0x1a, 0x1a, 0x1a))

@@ -1,6 +1,18 @@
 #!/bin/bash
-# Simple management script for muzic channelz
+# Simple management script for muzic channelz (run from project root)
 cd "$(dirname "$0")"
+if [ ! -d "app" ] || [ ! -f "requirements.txt" ]; then
+    echo "Error: Run this script from the muzic_channelz project root (directory containing app/ and requirements.txt)."
+    exit 1
+fi
+if [ ! -f ".venv/bin/activate" ]; then
+    echo "Error: Virtualenv not found. Create it with: python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt"
+    exit 1
+fi
+if [ ! -x ".venv/bin/python" ]; then
+    echo "Error: .venv/bin/python not found. Create the venv with: python3 -m venv .venv && .venv/bin/python -m pip install -r requirements.txt"
+    exit 1
+fi
 
 case "$1" in
   start)
@@ -8,8 +20,8 @@ case "$1" in
       echo "Server is already running (PID: $(pgrep -f 'uvicorn app.main'))"
       exit 1
     fi
-    source .venv/bin/activate
-    nohup uvicorn app.main:app --host 0.0.0.0 --port 8484 > /tmp/muzic-channelz.log 2>&1 &
+    VENV_PYTHON="$(dirname "$0")/.venv/bin/python"
+    nohup "$VENV_PYTHON" -m uvicorn app.main:app --host 0.0.0.0 --port "${MUZIC_PORT:-8484}" > /tmp/muzic-channelz.log 2>&1 &
     sleep 2
     if pgrep -f "uvicorn app.main" > /dev/null; then
       echo "✓ Server started (PID: $(pgrep -f 'uvicorn app.main'))"

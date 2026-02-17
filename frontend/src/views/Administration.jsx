@@ -83,10 +83,31 @@ export default function Administration() {
     if (!window.confirm('Start the FFmpeg service? All enabled channels will begin streaming.')) return
     setServiceAction('starting')
     try {
-      await startService()
-      await getAdminState().then(setState)
+      const res = await startService()
+      const next = await getAdminState()
+      setState(next)
+      if (!res?.ok && res?.message) {
+        window.alert(res.message)
+        return
+      }
+      if (res?.channels && Object.keys(res.channels).length > 0) {
+        const failed = Object.entries(res.channels).filter(([, v]) => v !== 'ok')
+        if (failed.length > 0 && !next?.service_started) {
+          const details = failed.map(([id, err]) => `${id}: ${err}`).join('\n')
+          window.alert(
+            (res.message || 'Service could not stay started.') +
+              '\n\nDetails:\n' + details +
+              '\n\nCheck Live logs for FFmpeg errors.'
+          )
+        } else if (failed.length > 0 && next?.service_started) {
+          window.alert(`Started with some failures:\n${failed.map(([id, err]) => `${id}: ${err}`).join('\n')}`)
+        }
+      } else if (res?.message && !next?.service_started) {
+        window.alert(res.message)
+      }
     } catch (e) {
       console.error(e)
+      window.alert(e?.message || 'Failed to start service.')
     } finally {
       setServiceAction(null)
     }

@@ -22,6 +22,13 @@ class Settings(BaseSettings):
     port: int = 8484
     debug: bool = False
 
+    # When true (e.g. in Docker without GPU), ignore profile hardware_accel and use software encoding.
+    ffmpeg_force_software: bool = False
+
+    # Output resolution (width, height) for streams and stock backgrounds.
+    output_width: int = 1280
+    output_height: int = 720
+
     data_dir: Path = _data_dir()
     backgrounds_dir: Path | None = None
     logs_dir: Path | None = None

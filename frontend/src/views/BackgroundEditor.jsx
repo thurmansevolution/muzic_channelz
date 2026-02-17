@@ -378,7 +378,7 @@ export default function BackgroundEditor() {
                   {(currentBg.overlay_placements || []).filter((p) => p.key === 'artist_image').map((p) => (
                     <div key={p.key} className="space-y-2 p-2 rounded bg-surface-600/50 border border-surface-500/50">
                       <p className="text-xs font-medium text-slate-500 uppercase tracking-wider">Artist image size</p>
-                      <p className="text-sm text-slate-400">Scale the artist photo overlay. Values are percent of canvas width/height (stream uses 1920×1080).</p>
+                      <p className="text-sm text-slate-400">Scale the artist photo overlay. Values are percent of canvas width/height (default stream size 1280×720; configurable via MUZIC_OUTPUT_WIDTH / MUZIC_OUTPUT_HEIGHT).</p>
                       <label className="flex items-center gap-2 text-sm text-slate-400 cursor-pointer">
                         <input
                           type="checkbox"

@@ -92,9 +92,31 @@ def _parse_now_playing(data: dict) -> tuple[str, str, str]:
         return ("—", "—", "")
 
 
-def _default_art_path() -> Path:
-    """Path to the default muzic channelz logo used when no artist image is found."""
-    return Path(__file__).resolve().parent.parent / "frontend" / "public" / "logo.png"
+def _ensure_placeholder_art(art_path: Path, size: int = 256) -> None:
+    """Write a simple placeholder image (gray with question mark) when no default art exists."""
+    try:
+        from PIL import Image, ImageDraw
+        art_path.parent.mkdir(parents=True, exist_ok=True)
+        img = Image.new("RGB", (size, size), (0x2a, 0x2a, 0x2a))
+        draw = ImageDraw.Draw(img)
+        # Draw a simple "?" in the center
+        try:
+            draw.text((size // 2 - 20, size // 2 - 30), "?", fill=(0x88, 0x88, 0x88))
+        except Exception:
+            pass
+        img.save(art_path, "PNG")
+    except Exception:
+        pass
+
+
+def _default_art_path() -> Path | None:
+    """Path to the default icon/logo used when no artist image is found. Tries app/static first (Docker), then frontend/public."""
+    root = Path(__file__).resolve().parent.parent
+    for rel in ("app/static/default-art.png", "frontend/public/logo.png"):
+        p = root / rel.replace("/", os.sep)
+        if p.exists():
+            return p
+    return None
 
 
 async def write_now_playing_files(
@@ -110,9 +132,11 @@ async def write_now_playing_files(
         stream_dir.joinpath("artist.txt").write_text("—", encoding="utf-8")
         stream_dir.joinpath("bio.txt").write_text("—", encoding="utf-8")
         default_art = _default_art_path()
-        if default_art.exists():
+        if default_art:
             import shutil
             shutil.copy2(default_art, stream_dir / "art.png")
+        else:
+            _ensure_placeholder_art(stream_dir / "art.png")
         return ("—", "—")
     data = await _fetch_now_playing(station)
     title, artist, _ = _parse_now_playing(data) if data else ("—", "—", "")
@@ -179,12 +203,13 @@ async def write_now_playing_files(
             _log(f"art download error: {e}")
     if not art_resolved:
         default_art = _default_art_path()
-        if default_art.exists():
+        if default_art:
             import shutil
             shutil.copy2(default_art, art_path)
-            _log("art: using default logo (no artist image)")
+            _log("art: using default icon (no artist image)")
         else:
-            _log("no art source — art.png unchanged")
+            _ensure_placeholder_art(art_path)
+            _log("art: using generated placeholder (no artist image)")
 
     await asyncio.sleep(1.0)
     stream_dir.joinpath("song.txt").write_text(_wrap_text(title, 56), encoding="utf-8")
