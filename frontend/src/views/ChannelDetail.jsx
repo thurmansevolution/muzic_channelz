@@ -153,10 +153,6 @@ export default function ChannelDetail() {
     await runChannelAction(() => restartChannel(channelId), { bumpStreamKey: true })
   }
 
-  const handleRefreshStream = () => {
-    setStreamKey(Date.now())
-  }
-
   const handleBackgroundChange = async (bgId) => {
     if (bgId === (channel && channel.background_id)) return
     if (!window.confirm('Changing the background will restart the FFmpeg service for this channel. Continue?')) return
@@ -250,13 +246,6 @@ export default function ChannelDetail() {
                     <p className="text-sm">Buffering… Stream will resume when ready.</p>
                   </div>
                 )}
-                <button
-                  type="button"
-                  onClick={handleRefreshStream}
-                  className="absolute bottom-2 right-2 px-2 py-1 rounded bg-black/60 text-slate-300 text-xs hover:bg-black/80 hover:text-white"
-                >
-                  Refresh stream
-                </button>
               </>
             ) : (
               <div className="text-center">

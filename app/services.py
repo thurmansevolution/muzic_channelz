@@ -330,7 +330,7 @@ async def _start_single_channel(channel: Channel, state: AdminState, index: int)
     # Fallbacks in output-resolution pixels (1280×720 base)
     ch_name_x = to_px_x(channel_name_pl.x) if channel_name_pl else _sx(27)
     ch_name_y = to_px_y(channel_name_pl.y) if channel_name_pl else _sy(27)
-    ch_name_fs = channel_name_pl.font_size if channel_name_pl and channel_name_pl.font_size else 20
+    ch_name_fs = channel_name_pl.font_size if channel_name_pl and channel_name_pl.font_size else 26
     ch_name_fc = norm_color(channel_name_pl.font_color) if channel_name_pl else "white"
     ch_name_sc = norm_color(channel_name_pl.shadow_color) if channel_name_pl else "black"
     song_x = to_px_x(song_pl.x) if song_pl else _sx(80)
@@ -343,7 +343,7 @@ async def _start_single_channel(channel: Channel, state: AdminState, index: int)
     artist_fs = artist_pl.font_size if artist_pl and artist_pl.font_size else 28
     artist_fc = norm_color(artist_pl.font_color) if artist_pl else "white"
     artist_sc = norm_color(artist_pl.shadow_color) if artist_pl else "black"
-    bio_x_default = _sx(520)
+    bio_x_default = _sx(480)
     bio_y_default = _sy(270)
     bio_fs_default = 26
     await write_now_playing_files(out_dir, channel, state)

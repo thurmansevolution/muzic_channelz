@@ -187,10 +187,10 @@ def default_overlay_placements() -> list[OverlayPlacement]:
         return max(14, int(round(s * min(w, h) / 720)))
     # Base positions at 1280×720: channel top-left, image centered vs bio/track, bio right, song/artist right + double gap
     base = {
-        "channel_name": (27, 27, 0, 0, 20),
+        "channel_name": (27, 27, 0, 0, 26),   # same size as artist bio
         "song_title": (80, 520, 0, 0, 32),     # track title, down a little
         "artist_name": (80, 598, 0, 0, 28),    # artist name, a tad more space below track
-        "artist_bio": (520, 270, 0, 0, 26),    # bio position (good)
+        "artist_bio": (480, 270, 0, 0, 26),    # a tad left from 520
         "artist_image": (160, 230, 200, 200, 0),  # moved up a bit more
     }
     return [
