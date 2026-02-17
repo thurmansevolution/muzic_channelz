@@ -185,13 +185,16 @@ def default_overlay_placements() -> list[OverlayPlacement]:
         return int(round(y * h / base_h))
     def sf(s: int) -> int:
         return max(14, int(round(s * min(w, h) / 720)))
-    # Base positions at 1280×720: channel top-left, image centered vs bio/track, bio right, song/artist right + double gap
+    # Base positions at 1280×720: channel top-left, image centered vs bio/track.
+    # Tweaks:
+    # - artist_bio is aligned a little higher so its top is just below the top of the artist image
+    # - artist_name is nudged down slightly for more spacing from the song title
     base = {
-        "channel_name": (27, 27, 0, 0, 26),   # same size as artist bio
-        "song_title": (80, 520, 0, 0, 32),     # track title, down a little
-        "artist_name": (80, 598, 0, 0, 28),    # artist name, a tad more space below track
-        "artist_bio": (480, 270, 0, 0, 26),    # a tad left from 520
-        "artist_image": (160, 230, 200, 200, 0),  # moved up a bit more
+        "channel_name": (27, 27, 0, 0, 26),
+        "song_title": (80, 520, 0, 0, 32),
+        "artist_name": (80, 620, 0, 0, 28),     # moved down slightly
+        "artist_bio": (480, 250, 0, 0, 26),     # moved up slightly (still below artist image top)
+        "artist_image": (160, 230, 200, 200, 0),
     }
     return [
         OverlayPlacement(key="channel_name", x=sx(base["channel_name"][0]), y=sy(base["channel_name"][1]), width=0, height=0, font_size=sf(base["channel_name"][4]), anchor="nw", font_color="white", shadow_color="black", font_style="normal", scroll_speed=0),
