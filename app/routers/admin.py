@@ -21,9 +21,14 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 @router.get("/state", response_model=AdminState)
 async def get_state() -> AdminState:
-    """Return admin state with service_started and channel running state reflecting actual process state (so after server restart the UI shows correct status)."""
+    """Return admin state with service_started and channel running state reflecting actual process state."""
     state = await load_admin_state()
     state.service_started = any(services.is_running(c.id) for c in state.channels)
+    # Return updated HLS defaults for older saved configs so UI shows current defaults
+    if state.ffmpeg_settings and state.ffmpeg_settings.hls_time == 4 and state.ffmpeg_settings.hls_list_size == 6:
+        state = state.model_copy(update={
+            "ffmpeg_settings": state.ffmpeg_settings.model_copy(update={"hls_time": 2, "hls_list_size": 4}),
+        })
     return state
 
 

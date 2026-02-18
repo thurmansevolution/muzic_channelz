@@ -1,8 +1,14 @@
 import { useState, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { getAdminState, saveAdminState, startService, stopService, exportBackup, restoreBackup, clearMetadataCache } from '../api'
 
 const defaultStation = () => ({ name: '', base_url: '', api_key: '', station_shortcode: '' })
-const defaultProfile = () => ({ name: '', preset_name: 'custom', video_codec: 'libx264', video_bitrate: '2M', preset: 'medium', pixel_format: 'yuv420p', audio_codec: 'aac', audio_bitrate: '192k', hardware_accel: false, hw_accel_type: 'none', hw_accel_device: '', extra_args: [] })
+const defaultProfile = () => ({
+  id: `profile_${Date.now()}`,
+  name: '', preset_name: 'custom', video_codec: 'libx264', video_bitrate: '2M', preset: 'medium', pixel_format: 'yuv420p',
+  audio_codec: 'aac', audio_bitrate: '192k', hardware_accel: false, hw_accel_type: 'none', hw_accel_device: '', extra_args: [],
+  thread_count: 0, video_profile: '', video_buffer_size: '', allow_bframes: true, audio_channels: 0, sample_rate: '', normalize_loudness: 'off', normalize_audio: false, normalize_video: false,
+})
 
 const FFMPEG_PRESETS = {
   'ultrafast': { preset: 'ultrafast', video_codec: 'libx264', video_bitrate: '3M', audio_bitrate: '192k' },
@@ -18,7 +24,22 @@ const FFMPEG_PRESETS = {
 }
 const defaultChannel = () => ({ id: crypto.randomUUID?.() ?? `ch_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`, name: '', slug: '', azuracast_station_id: '', ffmpeg_profile_id: '', background_id: 'stock', stream_port: 0, enabled: true, extra: {} })
 
+function hasExtendedCustomization(prof) {
+  return (
+    (prof.thread_count ?? 0) > 0 ||
+    ((prof.video_profile ?? '').trim() !== '') ||
+    ((prof.video_buffer_size ?? '').trim() !== '') ||
+    (prof.allow_bframes === false) ||
+    (prof.audio_channels ?? 0) > 0 ||
+    ((prof.sample_rate ?? '').trim() !== '') ||
+    (prof.normalize_loudness ?? 'off') !== 'off' ||
+    !!prof.normalize_audio ||
+    !!prof.normalize_video
+  )
+}
+
 export default function Administration() {
+  const navigate = useNavigate()
   const [state, setState] = useState(null)
   const [saving, setSaving] = useState(false)
   const [serviceAction, setServiceAction] = useState(null)
@@ -38,6 +59,8 @@ export default function Administration() {
   const update = (fn) => setState((s) => (s ? fn(s) : s))
   const [saveNotify, setSaveNotify] = useState(null)
   const [cacheNotify, setCacheNotify] = useState(null)
+  const [extendedOpen, setExtendedOpen] = useState({})
+  const [restartOverlay, setRestartOverlay] = useState(false)
 
   const save = async () => {
     if (!state) return
@@ -49,33 +72,44 @@ export default function Administration() {
       return
     setSaving(true)
     setSaveNotify(null)
+    setRestartOverlay(true)
     try {
-      const next = await saveAdminState(state)
+      const profiles = state.ffmpeg_profiles || []
+      const profileId = (p) => (p.id || p.name || '').trim()
+      const toSave = profiles.length === 1
+        ? {
+            ...state,
+            channels: (state.channels || []).map((c) => {
+              const hasMatch = profiles.some((p) => (c.ffmpeg_profile_id || '').trim() === profileId(p) || (c.ffmpeg_profile_id || '').trim() === (p.name || '').trim())
+              if (!hasMatch) return { ...c, ffmpeg_profile_id: profileId(profiles[0]) }
+              return c
+            }),
+          }
+        : state
+      const next = await saveAdminState(toSave)
       setState(next)
       if (next?.service_started) {
         try {
           await stopService()
           await startService()
-          await getAdminState().then(setState)
+          const updated = await getAdminState()
+          setState(updated)
           setSaveNotify('Settings saved and service restarted.')
-          window.alert('Settings saved. Service restarted successfully.')
         } catch (restartErr) {
           console.error(restartErr)
           setSaveNotify('Settings saved but restart failed.')
-          window.alert('Restart failed. Settings were saved but the streaming service could not be restarted.')
         }
       } else {
         setSaveNotify('Settings saved.')
-        window.alert('Settings saved.')
       }
       setTimeout(() => setSaveNotify(null), 5000)
     } catch (e) {
       console.error(e)
       setSaveNotify('Save or restart failed.')
-      window.alert('Save or restart failed.')
       setTimeout(() => setSaveNotify(null), 5000)
     } finally {
       setSaving(false)
+      setRestartOverlay(false)
     }
   }
 
@@ -127,6 +161,14 @@ export default function Administration() {
   if (!state) return <div className="p-6 text-slate-400">Loading…</div>
 
   return (
+    <>
+      {restartOverlay && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70">
+          <div className="rounded-xl border border-surface-500 bg-surface-800 px-8 py-6 text-center shadow-xl">
+            <p className="text-lg font-medium text-white">Please wait while the service restarts…</p>
+          </div>
+        </div>
+      )}
     <div className="p-6 max-w-4xl">
       <h1 className="text-2xl font-semibold text-white mb-2">administration</h1>
       <p className="text-slate-400 text-sm mb-6">Configure Azuracast, metadata providers, FFmpeg profiles, and channels. Then start the service.</p>
@@ -390,7 +432,16 @@ export default function Administration() {
 
       {/* FFmpeg profiles */}
       <section className="mb-8">
-        <h2 className="text-lg font-medium text-white mb-3">ffmpeg profiles</h2>
+        <div className="flex items-center gap-3 mb-3">
+          <h2 className="text-lg font-medium text-white">ffmpeg profiles</h2>
+          <button
+            type="button"
+            onClick={() => navigate('/administration/ffmpeg-settings')}
+            className="px-3 py-1.5 rounded-lg border border-surface-500 text-slate-300 text-sm font-medium hover:bg-surface-600 hover:border-accent-500/50 hover:text-accent-400 transition-colors"
+          >
+            ffmpeg settings
+          </button>
+        </div>
         {(state.ffmpeg_profiles || []).map((prof, i) => {
           const presetName = prof.preset_name || 'custom'
           const applyPreset = (presetKey) => {
@@ -512,13 +563,122 @@ export default function Administration() {
                 </div>
               )}
             </div>
+            <div className="border-t border-surface-500 pt-3 mt-3 space-y-2">
+              {(() => {
+                const isExtendedOpen = extendedOpen[i] || hasExtendedCustomization(prof)
+                return (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setExtendedOpen((o) => ({ ...o, [i]: !o[i] }))}
+                      className="flex items-center gap-2 text-xs text-slate-400 font-medium uppercase tracking-wider hover:text-slate-300"
+                    >
+                      Extended options
+                      <span className="text-slate-500">{isExtendedOpen ? '▼' : '▶'}</span>
+                    </button>
+                    {isExtendedOpen && (
+                    <>
+                    <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">Thread count (0=auto)</label>
+                  <input
+                    type="number"
+                    min={0}
+                    value={prof.thread_count ?? 0}
+                    onChange={(e) => update((s) => ({ ...s, ffmpeg_profiles: s.ffmpeg_profiles.map((p, j) => (j === i ? { ...p, thread_count: Math.max(0, parseInt(e.target.value, 10) || 0) } : p)) }))}
+                    className="w-full px-3 py-2 rounded bg-surface-600 border border-surface-500 text-white text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">Video profile (e.g. high, main)</label>
+                  <input
+                    placeholder="libx264 only"
+                    value={prof.video_profile ?? ''}
+                    onChange={(e) => update((s) => ({ ...s, ffmpeg_profiles: s.ffmpeg_profiles.map((p, j) => (j === i ? { ...p, video_profile: e.target.value } : p)) }))}
+                    className="w-full px-3 py-2 rounded bg-surface-600 border border-surface-500 text-white text-sm placeholder-slate-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">Video buffer size (e.g. 4000k)</label>
+                  <input
+                    placeholder="optional"
+                    value={prof.video_buffer_size ?? ''}
+                    onChange={(e) => update((s) => ({ ...s, ffmpeg_profiles: s.ffmpeg_profiles.map((p, j) => (j === i ? { ...p, video_buffer_size: e.target.value } : p)) }))}
+                    className="w-full px-3 py-2 rounded bg-surface-600 border border-surface-500 text-white text-sm placeholder-slate-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">Audio channels (0=keep)</label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={8}
+                    value={prof.audio_channels ?? 0}
+                    onChange={(e) => update((s) => ({ ...s, ffmpeg_profiles: s.ffmpeg_profiles.map((p, j) => (j === i ? { ...p, audio_channels: Math.max(0, Math.min(8, parseInt(e.target.value, 10) || 0)) } : p)) }))}
+                    className="w-full px-3 py-2 rounded bg-surface-600 border border-surface-500 text-white text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">Sample rate (e.g. 44100, 48000)</label>
+                  <input
+                    placeholder="empty = keep source"
+                    value={prof.sample_rate ?? ''}
+                    onChange={(e) => update((s) => ({ ...s, ffmpeg_profiles: s.ffmpeg_profiles.map((p, j) => (j === i ? { ...p, sample_rate: e.target.value } : p)) }))}
+                    className="w-full px-3 py-2 rounded bg-surface-600 border border-surface-500 text-white text-sm placeholder-slate-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">Normalize loudness</label>
+                  <select
+                    value={prof.normalize_loudness ?? 'off'}
+                    onChange={(e) => update((s) => ({ ...s, ffmpeg_profiles: s.ffmpeg_profiles.map((p, j) => (j === i ? { ...p, normalize_loudness: e.target.value } : p)) }))}
+                    className="w-full px-3 py-2 rounded bg-surface-600 border border-surface-500 text-white text-sm"
+                  >
+                    <option value="off">off</option>
+                    <option value="on">on</option>
+                  </select>
+                </div>
+              </div>
+              <label className="flex items-center gap-2 text-sm text-slate-300 mt-2">
+                <input
+                  type="checkbox"
+                  checked={prof.allow_bframes !== false}
+                  onChange={(e) => update((s) => ({ ...s, ffmpeg_profiles: s.ffmpeg_profiles.map((p, j) => (j === i ? { ...p, allow_bframes: e.target.checked } : p)) }))}
+                  className="rounded border-surface-500"
+                />
+                Allow B-frames
+              </label>
+              <label className="flex items-center gap-2 text-sm text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={!!prof.normalize_audio}
+                  onChange={(e) => update((s) => ({ ...s, ffmpeg_profiles: s.ffmpeg_profiles.map((p, j) => (j === i ? { ...p, normalize_audio: e.target.checked } : p)) }))}
+                  className="rounded border-surface-500"
+                />
+                Normalize audio
+              </label>
+              <label className="flex items-center gap-2 text-sm text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={!!prof.normalize_video}
+                  onChange={(e) => update((s) => ({ ...s, ffmpeg_profiles: s.ffmpeg_profiles.map((p, j) => (j === i ? { ...p, normalize_video: e.target.checked } : p)) }))}
+                  className="rounded border-surface-500"
+                />
+                Normalize video
+              </label>
+                    </>
+                    )}
+                  </>
+                )
+              })()}
+            </div>
             <button
               type="button"
               onClick={() => {
                 if (!window.confirm(`Remove FFmpeg profile "${prof.name || 'this profile'}"? Channels using it will need another profile.`)) return
                 update((s) => ({ ...s, ffmpeg_profiles: s.ffmpeg_profiles.filter((_, j) => j !== i) }))
               }}
-              className="text-sm text-red-400 hover:underline"
+              className="text-sm text-red-400 hover:underline mt-3 block"
             >
               Remove
             </button>
@@ -564,16 +724,30 @@ export default function Administration() {
                 <option key={st.name} value={st.name}>{st.name || st.station_shortcode || 'Unnamed'}</option>
               ))}
             </select>
+            {(() => {
+              const profiles = state.ffmpeg_profiles || []
+              const profileId = (p) => (p.id || p.name || '').trim()
+              const matches = (c, p) => (c.ffmpeg_profile_id || '').trim() === profileId(p) || (c.ffmpeg_profile_id || '').trim() === (p.name || '').trim()
+              const effectiveValue = (() => {
+                if (profiles.length === 0) return ''
+                const matched = profiles.find((p) => matches(ch, p))
+                if (matched) return profileId(matched)
+                if (profiles.length === 1) return profileId(profiles[0])
+                return ''
+              })()
+              return (
             <select
-              value={ch.ffmpeg_profile_id}
+              value={effectiveValue}
               onChange={(e) => update((s) => ({ ...s, channels: s.channels.map((c, j) => (j === i ? { ...c, ffmpeg_profile_id: e.target.value } : c)) }))}
               className="w-full px-3 py-2 rounded bg-surface-600 border border-surface-500 text-white"
             >
               <option value="">— Profile —</option>
-              {(state.ffmpeg_profiles || []).map((p) => (
-                <option key={p.name} value={p.name}>{p.name || 'Unnamed'}</option>
+              {profiles.map((p) => (
+                <option key={p.id || p.name} value={profileId(p)}>{p.name || 'Unnamed'}</option>
               ))}
             </select>
+              )
+            })()}
             <label className="flex items-center gap-2 text-sm text-slate-300">
               <input
                 type="checkbox"
@@ -618,5 +792,6 @@ export default function Administration() {
         {saving ? 'Saving…' : 'Save all'}
       </button>
     </div>
+    </>
   )
 }

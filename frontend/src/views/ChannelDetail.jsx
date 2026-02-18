@@ -304,7 +304,7 @@ export default function ChannelDetail() {
         {/* FFmpeg profile */}
         <section>
           <h2 className="text-sm font-medium text-slate-400 uppercase tracking-wider mb-2">FFmpeg profile</h2>
-          <p className="text-white">{channel.ffmpeg_profile_id || 'default'}</p>
+          <p className="text-white">{channel.ffmpeg_profile_name ?? channel.ffmpeg_profile_id ?? 'default'}</p>
         </section>
       </div>
     </div>

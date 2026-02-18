@@ -4,6 +4,7 @@ import Home from './views/Home'
 import Channelz from './views/Channelz'
 import ChannelDetail from './views/ChannelDetail'
 import Administration from './views/Administration'
+import FfmpegSettings from './views/FfmpegSettings'
 import BackgroundEditor from './views/BackgroundEditor'
 import LiveLogs from './views/LiveLogs'
 
@@ -76,6 +77,7 @@ export default function App() {
           <Route path="/channelz" element={<Channelz />} />
           <Route path="/channelz/:channelId" element={<ChannelDetail />} />
           <Route path="/administration" element={<Administration />} />
+          <Route path="/administration/ffmpeg-settings" element={<FfmpegSettings />} />
           <Route path="/background-editor" element={<BackgroundEditor />} />
           <Route path="/live-logs" element={<LiveLogs />} />
           <Route path="/live-logs/:channelId" element={<LiveLogs />} />

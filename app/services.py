@@ -9,7 +9,7 @@ from typing import Callable
 
 from app.config import settings
 from app.ffmpeg_runner import start_channel_ffmpeg, append_app_log, append_metadata_log
-from app.models import AdminState, Channel, FFmpegProfile
+from app.models import AdminState, Channel, FFmpegProfile, FFmpegSettings
 from app.store import load_admin_state
 from app.overlay import (
     default_overlay_placements,
@@ -30,8 +30,11 @@ _last_auto_restart_time: dict[str, float] = {}
 
 
 def _get_profile(state: AdminState, profile_id: str) -> FFmpegProfile | None:
+    if not (profile_id or "").strip():
+        return state.ffmpeg_profiles[0] if state.ffmpeg_profiles else None
+    pid = (profile_id or "").strip()
     for p in state.ffmpeg_profiles:
-        if p.name == profile_id:
+        if (getattr(p, "id", None) or "").strip() == pid or (p.name or "").strip() == pid:
             return p
     return state.ffmpeg_profiles[0] if state.ffmpeg_profiles else None
 
@@ -248,11 +251,23 @@ def _get_azuracast_listen_url(channel: Channel, state: AdminState) -> str | None
     return None
 
 
+def _get_ffmpeg_settings(state: AdminState) -> FFmpegSettings:
+    """Return FFmpeg settings from state or defaults."""
+    if state.ffmpeg_settings is not None:
+        return state.ffmpeg_settings
+    return FFmpegSettings()
+
+
 async def _start_single_channel(channel: Channel, state: AdminState, index: int) -> str:
     """Internal helper to start one channel HLS pipeline with background + overlay."""
     profile = _get_profile(state, channel.ffmpeg_profile_id)
     if not profile:
         return "error: no ffmpeg profile"
+
+    ff_settings = _get_ffmpeg_settings(state)
+    hls_time_sec = max(1, min(30, ff_settings.hls_time))
+    hls_list_size_val = max(2, min(30, ff_settings.hls_list_size))
+    ffmpeg_executable = (ff_settings.ffmpeg_path or "ffmpeg").strip() or "ffmpeg"
 
     streams_root = settings.data_dir / "streams"
     out_dir: Path = streams_root / channel.id
@@ -364,6 +379,8 @@ async def _start_single_channel(channel: Channel, state: AdminState, index: int)
     cmd = ["-y"]
     if not audio_url:
         cmd.append("-re")
+    if getattr(profile, "thread_count", 0) and profile.thread_count > 0:
+        cmd.extend(["-threads", str(profile.thread_count)])
 
     from app.config import settings as _settings
     from app.ffmpeg_runner import append_app_log
@@ -526,6 +543,8 @@ async def _start_single_channel(channel: Channel, state: AdminState, index: int)
             cmd.extend(["-vf", vf])
             video_map = f"{video_input_index}:v:0"
 
+    fps = 25
+    gop_size = fps * hls_time_sec
     cmd.extend([
         "-shortest",
         "-avoid_negative_ts", "make_zero",
@@ -534,6 +553,16 @@ async def _start_single_channel(channel: Channel, state: AdminState, index: int)
         "-c:v", video_codec,
         "-b:v", profile.video_bitrate,
     ])
+    if getattr(profile, "video_buffer_size", "") and (profile.video_buffer_size or "").strip():
+        cmd.extend(["-bufsize", (profile.video_buffer_size or "").strip()])
+    if use_hw and profile.hw_accel_type == "nvenc" and not getattr(profile, "allow_bframes", True):
+        cmd.extend(["-bf", "0"])
+    elif not use_hw and video_codec == "libx264":
+        if getattr(profile, "video_profile", "") and (profile.video_profile or "").strip():
+            cmd.extend(["-profile:v", (profile.video_profile or "").strip()])
+        if not getattr(profile, "allow_bframes", True):
+            cmd.extend(["-bf", "0"])
+    cmd.extend(["-g", str(gop_size), "-keyint_min", str(gop_size)])
 
     if not use_hw:
         cmd.extend(["-preset", profile.preset])
@@ -554,21 +583,17 @@ async def _start_single_channel(channel: Channel, state: AdminState, index: int)
     elif profile.hw_accel_type == "videotoolbox":
         cmd.extend(["-allow_sw", "1"])
 
+    cmd.extend(["-pix_fmt", profile.pixel_format, "-c:a", profile.audio_codec, "-b:a", profile.audio_bitrate])
+    if getattr(profile, "audio_channels", 0) and profile.audio_channels > 0:
+        cmd.extend(["-ac", str(profile.audio_channels)])
+    if getattr(profile, "sample_rate", "") and (profile.sample_rate or "").strip():
+        cmd.extend(["-ar", (profile.sample_rate or "").strip()])
     cmd.extend([
-        "-pix_fmt",
-        profile.pixel_format,
-        "-c:a",
-        profile.audio_codec,
-        "-b:a",
-        profile.audio_bitrate,
-        "-f",
-        "hls",
-        "-hls_time",
-        "4",
-        "-hls_list_size",
-        "6",
-        "-hls_flags",
-        "delete_segments",
+        "-f", "hls",
+        "-hls_segment_type", "mpegts",
+        "-hls_time", str(hls_time_sec),
+        "-hls_list_size", str(hls_list_size_val),
+        "-hls_flags", "delete_segments",
         str(output_path),
     ])
     cmd.extend(profile.extra_args)
@@ -589,7 +614,9 @@ async def _start_single_channel(channel: Channel, state: AdminState, index: int)
 
         return cb
 
-    proc = await start_channel_ffmpeg(channel.id, cmd, on_log=make_cb(channel.id))
+    proc = await start_channel_ffmpeg(
+        channel.id, cmd, on_log=make_cb(channel.id), ffmpeg_executable=ffmpeg_executable
+    )
     if proc:
         _running[channel.id] = proc
         stop_ev = asyncio.Event()

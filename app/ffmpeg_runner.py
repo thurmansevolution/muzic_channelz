@@ -70,12 +70,14 @@ async def start_channel_ffmpeg(
     channel_id: str,
     full_cmd: list[str],
     on_log: Callable[[str], None] | None = None,
+    ffmpeg_executable: str = "ffmpeg",
 ) -> asyncio.subprocess.Process | None:
     """Start FFmpeg process and optionally stream stderr to on_log and log file."""
     log_path = _log_path(channel_id)
+    executable = (ffmpeg_executable or "ffmpeg").strip() or "ffmpeg"
     try:
         proc = await asyncio.create_subprocess_exec(
-            "ffmpeg",
+            executable,
             *full_cmd,
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.DEVNULL,

@@ -33,7 +33,36 @@ def _slugify(name: str) -> str:
     s = s.strip("_") or "channel"
     return s[:64]
 
+def _server_base_url() -> str:
+    """Base URL for M3U/yml using this server's IP so the file works on any install.
+
+    Uses MUZIC_PUBLIC_HOST if set (e.g. in Docker set to the host's LAN IP), otherwise
+    _local_ip() so the downloadable file always points to the server it's running on.
+    """
+    import os
+    from app.config import settings
+    host = (os.environ.get("MUZIC_PUBLIC_HOST") or "").strip() or _local_ip()
+    return f"http://{host}:{settings.port}"
+
 router = APIRouter(prefix="/api/channels", tags=["channels"])
+
+
+def _profile_name_for_channel(state, ffmpeg_profile_id: str) -> str:
+    """Resolve FFmpeg profile id (or legacy name) to its display name."""
+    if not ffmpeg_profile_id:
+        return "default"
+    profiles = state.ffmpeg_profiles or []
+    for p in profiles:
+        pid = (getattr(p, "id", None) or "").strip()
+        pname = (p.name or "").strip()
+        if pid and pid == (ffmpeg_profile_id or "").strip():
+            return p.name or ffmpeg_profile_id
+        if pname == (ffmpeg_profile_id or "").strip():
+            return p.name or ffmpeg_profile_id
+    # Resolve profile by id; if missing and only one profile exists, use it
+    if len(profiles) == 1:
+        return profiles[0].name or ffmpeg_profile_id
+    return ffmpeg_profile_id
 
 
 @router.get("")
@@ -43,20 +72,20 @@ async def list_channels() -> list[dict]:
     for c in state.channels:
         d = c.model_dump()
         d["is_running"] = services.is_running(c.id)
+        d["ffmpeg_profile_name"] = _profile_name_for_channel(state, c.ffmpeg_profile_id or "")
         out.append(d)
     return out
 
 
 @router.get("/{channel_id}/m3u")
 async def get_m3u(channel_id: str):
-    """Return M3U playlist that points to the HLS stream. Response is plain text with attachment so players get correct URL."""
+    """Return M3U playlist that points to the HLS stream. URL uses this server's IP (or MUZIC_PUBLIC_HOST in Docker)."""
     state = await load_admin_state()
     ch = next((c for c in state.channels if c.id == channel_id), None)
     if not ch:
         raise HTTPException(404, "Channel not found")
     from fastapi.responses import Response
-    from app.config import settings
-    base = f"http://localhost:{settings.port}"
+    base = _server_base_url()
     url = f"{base}/stream/{channel_id}/index.m3u8"
     body = f"#EXTM3U\n#EXTINF:-1,{ch.name}\n{url}\n"
     filename = f"{ch.slug or ch.id}.m3u".replace(" ", "_")
@@ -69,14 +98,12 @@ async def get_m3u(channel_id: str):
 
 @router.get("/{channel_id}/ersatztv-yml")
 async def get_ersatztv_yml(channel_id: str) -> Response:
-    """Return a YAML file for ErsatzTV Remote Stream. Filename is station name (e.g. grunge_radio.yml). URL uses this machine's IP."""
+    """Return a YAML file for ErsatzTV Remote Stream. URL uses this server's IP (or MUZIC_PUBLIC_HOST in Docker)."""
     state = await load_admin_state()
     ch = next((c for c in state.channels if c.id == channel_id), None)
     if not ch:
         raise HTTPException(404, "Channel not found")
-    from app.config import settings
-    host = _local_ip()
-    base = f"http://{host}:{settings.port}"
+    base = _server_base_url()
     url = f"{base}/stream/{channel_id}/index.m3u8"
     yml = f"""# ErsatzTV Remote Stream — {ch.name or channel_id}
 # Docs: https://ersatztv.org/docs/media/local/remotestreams/definition
@@ -130,7 +157,7 @@ async def update_channel(channel_id: str, body: dict) -> dict:
             data.update(body)
             state.channels[i] = Channel.model_validate(data)
             await save_admin_state(state)
-            # If background changed and this channel is running, restart so changes apply
+            # Restart running channel so background/layout changes apply
             if services.is_running(channel_id) and "background_id" in body:
                 asyncio.create_task(services.restart_channel(channel_id))
             result = state.channels[i].model_dump()
