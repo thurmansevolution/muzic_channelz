@@ -6,6 +6,8 @@ services:
       - "8484:8484"
     environment:
       - MUZIC_PORT=8484
+      # Host IP for M3U/YML downloadable URLs (e.g. 192.168.1.100). Omit to use auto-detected IP.
+      #- MUZIC_PUBLIC_HOST=
       # Set to 0 to use hardware encoding. For NVIDIA set deploy below; for Intel/AMD use devices instead.
       - MUZIC_FFMPEG_FORCE_SOFTWARE=1
     # NVIDIA (NVENC) - requires NVIDIA Container Toolkit installed on the host:
