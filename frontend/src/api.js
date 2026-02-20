@@ -67,12 +67,49 @@ export function getM3uUrl(channelId) {
   return `${BASE}/api/channels/${channelId}/m3u`
 }
 
+export function getPlaylistM3uUrl() {
+  return `${BASE}/playlist.m3u`
+}
+
+export function getGuideXmlUrl() {
+  return `${BASE}/guide.xml`
+}
+
+/** Base URL for M3U/XMLTV so other devices can use it (LAN IP or MUZIC_PUBLIC_HOST). */
+export async function getPublicBaseUrl() {
+  const r = await fetch(`${BASE}/api/system/public-url`)
+  if (!r.ok) return null
+  const data = await r.json()
+  return data?.base_url ?? null
+}
+
 export function getErsatzTvYmlUrl(channelId) {
   return `${BASE}/api/channels/${channelId}/ersatztv-yml`
 }
 
 export function getStreamUrl(channelId) {
   return `${BASE}/stream/${channelId}/index.m3u8`
+}
+
+export function getChannelLogoUrl(channelId) {
+  return `${BASE}/api/channels/logo/${channelId}`
+}
+
+export async function uploadChannelLogo(channelId, file) {
+  const form = new FormData()
+  form.append('file', file)
+  const r = await fetch(`${BASE}/api/channels/logo/${channelId}`, {
+    method: 'POST',
+    body: form,
+  })
+  if (!r.ok) throw new Error(await r.text() || r.statusText)
+  return r.json()
+}
+
+export async function removeChannelLogo(channelId) {
+  const r = await fetch(`${BASE}/api/channels/logo/${channelId}`, { method: 'DELETE' })
+  if (!r.ok) throw new Error(await r.text() || r.statusText)
+  return r.json()
 }
 
 export async function getBackgrounds() {

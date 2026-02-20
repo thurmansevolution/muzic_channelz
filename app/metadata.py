@@ -113,6 +113,78 @@ async def _fetch_lastfm(artist: str, api_key: str, base_url: str = "") -> str:
         return ""
 
 
+async def _fetch_discogs_bio(artist: str, token: str, base_url: str = "") -> str:
+    """Discogs: search artist, then GET artist/{id} for profile (bio). Token from discogs.com/settings/developers."""
+    if not (artist or "").strip() or not (token or "").strip():
+        return ""
+    base = (base_url or "https://api.discogs.com").rstrip("/")
+    search_url = f"{base}/database/search"
+    headers = {"User-Agent": USER_AGENT, "Authorization": f"Discogs token={token.strip()}"}
+    try:
+        async with httpx.AsyncClient(timeout=8.0, headers=headers) as client:
+            r = await client.get(search_url, params={"q": artist.strip(), "type": "artist", "per_page": "1"})
+            r.raise_for_status()
+            data = r.json()
+    except Exception:
+        return ""
+    results = data.get("results") or []
+    if not results or not isinstance(results[0], dict):
+        return ""
+    artist_id = results[0].get("id")
+    if not artist_id:
+        return ""
+    try:
+        async with httpx.AsyncClient(timeout=8.0, headers=headers) as client:
+            r = await client.get(f"{base}/artists/{artist_id}")
+            r.raise_for_status()
+            data = r.json()
+    except Exception:
+        return ""
+    profile = (data.get("profile") or "").strip()
+    if not profile:
+        return ""
+    profile = re.sub(r"<[^>]+>", "", profile)
+    return _truncate(profile)
+
+
+async def _fetch_genius_bio(artist: str, api_key: str, base_url: str = "") -> str:
+    """Genius: search, then GET artists/{id} for description. API key from genius.com/api-clients."""
+    if not (artist or "").strip() or not (api_key or "").strip():
+        return ""
+    base = (base_url or "https://api.genius.com").rstrip("/")
+    headers = {"Authorization": f"Bearer {api_key.strip()}", "User-Agent": USER_AGENT}
+    try:
+        async with httpx.AsyncClient(timeout=8.0, headers=headers) as client:
+            r = await client.get(f"{base}/search", params={"q": artist.strip()})
+            r.raise_for_status()
+            data = r.json()
+    except Exception:
+        return ""
+    hits = (data.get("response") or {}).get("hits") or []
+    for h in hits:
+        if not isinstance(h, dict):
+            continue
+        res = h.get("result") or {}
+        primary = res.get("primary_artist") or {}
+        artist_id = primary.get("id")
+        if not artist_id:
+            continue
+        try:
+            async with httpx.AsyncClient(timeout=8.0, headers=headers) as client:
+                r = await client.get(f"{base}/artists/{artist_id}")
+                r.raise_for_status()
+                adata = r.json()
+        except Exception:
+            continue
+        artist_data = (adata.get("response") or {}).get("artist") or {}
+        desc = (artist_data.get("description") or artist_data.get("description_annotation", {}).get("plain") or "").strip()
+        if desc:
+            desc = re.sub(r"<[^>]+>", "", desc)
+            return _truncate(desc)
+        break
+    return ""
+
+
 async def fetch_artist_bio(
     artist: str,
     state: AdminState,
@@ -166,6 +238,26 @@ async def fetch_artist_bio(
                     return out
             elif log_cb:
                 log_cb("Last.fm configured but API key empty")
+        elif name == "Discogs":
+            key = (p.api_key_or_token or "").strip()
+            base = (getattr(p, "base_url", None) or "").strip()
+            if key:
+                out = await _fetch_discogs_bio(artist, key, base or None)
+                if log_cb and out:
+                    log_cb(f"Discogs artist={artist!r} -> bio")
+                if out:
+                    set_cached(artist, bio=out)
+                    return out
+        elif name == "Genius":
+            key = (p.api_key_or_token or "").strip()
+            base = (getattr(p, "base_url", None) or "").strip()
+            if key:
+                out = await _fetch_genius_bio(artist, key, base or None)
+                if log_cb and out:
+                    log_cb(f"Genius artist={artist!r} -> bio")
+                if out:
+                    set_cached(artist, bio=out)
+                    return out
     if log_cb:
         log_cb(f"no bio for artist={artist!r}")
     out = "—"
@@ -225,6 +317,160 @@ async def fetch_artist_image_url_musicbrainz(
                 return resource
     if log_cb:
         log_cb(f"MusicBrainz no image relation for {artist!r}")
+    return ""
+
+
+async def _image_url_deezer(artist: str, log_cb: Callable[[str], None] | None = None) -> str:
+    """Deezer search/artist: no API key. Returns picture_big or picture_xl."""
+    if not (artist or "").strip():
+        return ""
+    url = "https://api.deezer.com/search/artist"
+    try:
+        async with httpx.AsyncClient(timeout=8.0, headers={"User-Agent": USER_AGENT}) as client:
+            r = await client.get(url, params={"q": artist.strip(), "limit": "1"})
+            r.raise_for_status()
+            data = r.json()
+    except Exception as e:
+        if log_cb:
+            log_cb(f"Deezer image error: {e}")
+        return ""
+    items = data.get("data") or []
+    if not items or not isinstance(items[0], dict):
+        return ""
+    a = items[0]
+    for key in ("picture_xl", "picture_big", "picture_medium"):
+        u = (a.get(key) or "").strip()
+        if u and u.startswith("http"):
+            if log_cb:
+                log_cb(f"Deezer artist image={artist!r}")
+            return u
+    return ""
+
+
+async def _image_url_itunes(artist: str, log_cb: Callable[[str], None] | None = None) -> str:
+    """iTunes Search API: no key. Returns artworkUrl100 from first artist result."""
+    if not (artist or "").strip():
+        return ""
+    url = "https://itunes.apple.com/search"
+    try:
+        async with httpx.AsyncClient(timeout=8.0, headers={"User-Agent": USER_AGENT}) as client:
+            r = await client.get(url, params={"term": artist.strip(), "entity": "allArtist", "limit": "1"})
+            r.raise_for_status()
+            data = r.json()
+    except Exception as e:
+        if log_cb:
+            log_cb(f"iTunes image error: {e}")
+        return ""
+    results = data.get("results") or []
+    if not results or not isinstance(results[0], dict):
+        return ""
+    u = (results[0].get("artworkUrl100") or results[0].get("artworkUrl60") or "").strip()
+    if u and u.startswith("http"):
+        if log_cb:
+            log_cb(f"iTunes artist image={artist!r}")
+        return u.replace("100x100", "600x600") if "100x100" in u else u
+    return ""
+
+
+async def _image_url_spotify(artist: str, client_id: str, client_secret: str, log_cb: Callable[[str], None] | None = None) -> str:
+    """Spotify Web API: client credentials, then search artist, use first image. Store 'client_id:client_secret' in api_key_or_token."""
+    if not (artist or "").strip() or ":" not in f"{client_id}:{client_secret}":
+        return ""
+    import base64
+    creds = base64.b64encode(f"{client_id.strip()}:{client_secret.strip()}".encode()).decode()
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            r = await client.post(
+                "https://accounts.spotify.com/api/token",
+                data={"grant_type": "client_credentials"},
+                headers={"Authorization": f"Basic {creds}", "Content-Type": "application/x-www-form-urlencoded"},
+            )
+            r.raise_for_status()
+            token = (r.json().get("access_token") or "").strip()
+    except Exception as e:
+        if log_cb:
+            log_cb(f"Spotify token error: {e}")
+        return ""
+    if not token:
+        return ""
+    try:
+        async with httpx.AsyncClient(timeout=8.0, headers={"Authorization": f"Bearer {token}", "User-Agent": USER_AGENT}) as client:
+            r = await client.get("https://api.spotify.com/v1/search", params={"q": artist.strip(), "type": "artist", "limit": "1"})
+            r.raise_for_status()
+            data = r.json()
+    except Exception as e:
+        if log_cb:
+            log_cb(f"Spotify search error: {e}")
+        return ""
+    artists = (data.get("artists") or {}).get("items") or []
+    if not artists or not isinstance(artists[0], dict):
+        return ""
+    imgs = (artists[0].get("images") or [])
+    for img in imgs:
+        if isinstance(img, dict):
+            u = (img.get("url") or "").strip()
+            if u and u.startswith("http"):
+                if log_cb:
+                    log_cb(f"Spotify artist image={artist!r}")
+                return u
+    return ""
+
+
+async def _image_url_discogs(artist: str, token: str, base_url: str = "", log_cb: Callable[[str], None] | None = None) -> str:
+    """Discogs: search artist, use cover_image or thumb from first result."""
+    if not (artist or "").strip() or not (token or "").strip():
+        return ""
+    base = (base_url or "https://api.discogs.com").rstrip("/")
+    headers = {"User-Agent": USER_AGENT, "Authorization": f"Discogs token={token.strip()}"}
+    try:
+        async with httpx.AsyncClient(timeout=8.0, headers=headers) as client:
+            r = await client.get(f"{base}/database/search", params={"q": artist.strip(), "type": "artist", "per_page": "1"})
+            r.raise_for_status()
+            data = r.json()
+    except Exception as e:
+        if log_cb:
+            log_cb(f"Discogs image error: {e}")
+        return ""
+    results = data.get("results") or []
+    if not results or not isinstance(results[0], dict):
+        return ""
+    a = results[0]
+    for key in ("cover_image", "thumb"):
+        u = (a.get(key) or "").strip()
+        if u and u.startswith("http"):
+            if log_cb:
+                log_cb(f"Discogs artist image={artist!r}")
+            return u
+    return ""
+
+
+async def _image_url_genius(artist: str, api_key: str, base_url: str = "", log_cb: Callable[[str], None] | None = None) -> str:
+    """Genius: search, use primary_artist.image_url from first hit."""
+    if not (artist or "").strip() or not (api_key or "").strip():
+        return ""
+    base = (base_url or "https://api.genius.com").rstrip("/")
+    headers = {"Authorization": f"Bearer {api_key.strip()}", "User-Agent": USER_AGENT}
+    try:
+        async with httpx.AsyncClient(timeout=8.0, headers=headers) as client:
+            r = await client.get(f"{base}/search", params={"q": artist.strip()})
+            r.raise_for_status()
+            data = r.json()
+    except Exception as e:
+        if log_cb:
+            log_cb(f"Genius image error: {e}")
+        return ""
+    hits = (data.get("response") or {}).get("hits") or []
+    for h in hits:
+        if not isinstance(h, dict):
+            continue
+        res = h.get("result") or {}
+        primary = res.get("primary_artist") or {}
+        u = (primary.get("image_url") or "").strip()
+        if u and u.startswith("http"):
+            if log_cb:
+                log_cb(f"Genius artist image={artist!r}")
+            return u
+        break
     return ""
 
 
@@ -308,37 +554,65 @@ async def fetch_artist_image_url(
         return url
     providers = list(getattr(state, "metadata_providers", None) or [])
     for p in providers:
-        if (p.name or "").strip() != "Last.fm":
+        name = (p.name or "").strip()
+        if not name:
             continue
         key = (p.api_key_or_token or "").strip()
-        if not key:
-            continue
-        base = (getattr(p, "base_url", None) or "").strip() or "https://ws.audioscrobbler.com/2.0/"
-        base = base.rstrip("/")
-        api_url = f"{base}/?method=artist.getinfo&artist={quote(artist)}&api_key={key}&format=json"
-        try:
-            async with httpx.AsyncClient(timeout=6.0, headers={"User-Agent": USER_AGENT}) as client:
-                r = await client.get(api_url)
-                r.raise_for_status()
-                data = r.json()
-        except Exception:
-            continue
-        try:
-            LASTFM_PLACEHOLDER_HASH = "2a96cbd8b46e442fc41c2b86b821562f"
-            images = (data.get("artist") or {}).get("image") or []
-            for size in ("extralarge", "large", "medium", "small"):
-                for img in images:
-                    if isinstance(img, dict) and img.get("size") == size:
-                        u = (img.get("#text") or img.get("url") or "").strip()
-                        if u and u.startswith("http") and LASTFM_PLACEHOLDER_HASH not in u:
-                            if log_cb:
-                                log_cb(f"Last.fm artist image={artist!r} -> {size}")
-                            set_cached(artist, image_url=u)
-                            return u
-                        if u and LASTFM_PLACEHOLDER_HASH in u and log_cb:
-                            log_cb(f"Last.fm artist image={artist!r} -> skipped (placeholder)")
-        except Exception:
-            pass
+        base = (getattr(p, "base_url", None) or "").strip()
+        if name == "Last.fm":
+            if not key:
+                continue
+            base = base or "https://ws.audioscrobbler.com/2.0/"
+            base = base.rstrip("/")
+            api_url = f"{base}/?method=artist.getinfo&artist={quote(artist)}&api_key={key}&format=json"
+            try:
+                async with httpx.AsyncClient(timeout=6.0, headers={"User-Agent": USER_AGENT}) as client:
+                    r = await client.get(api_url)
+                    r.raise_for_status()
+                    data = r.json()
+            except Exception:
+                continue
+            try:
+                LASTFM_PLACEHOLDER_HASH = "2a96cbd8b46e442fc41c2b86b821562f"
+                images = (data.get("artist") or {}).get("image") or []
+                for size in ("extralarge", "large", "medium", "small"):
+                    for img in images:
+                        if isinstance(img, dict) and img.get("size") == size:
+                            u = (img.get("#text") or img.get("url") or "").strip()
+                            if u and u.startswith("http") and LASTFM_PLACEHOLDER_HASH not in u:
+                                if log_cb:
+                                    log_cb(f"Last.fm artist image={artist!r} -> {size}")
+                                set_cached(artist, image_url=u)
+                                return u
+            except Exception:
+                pass
+        elif name == "Deezer":
+            url = await _image_url_deezer(artist, log_cb=log_cb)
+            if url:
+                set_cached(artist, image_url=url)
+                return url
+        elif name == "iTunes":
+            url = await _image_url_itunes(artist, log_cb=log_cb)
+            if url:
+                set_cached(artist, image_url=url)
+                return url
+        elif name == "Spotify":
+            if ":" in key:
+                cid, csec = key.split(":", 1)
+                url = await _image_url_spotify(artist, cid.strip(), csec.strip(), log_cb=log_cb)
+                if url:
+                    set_cached(artist, image_url=url)
+                    return url
+        elif name == "Discogs" and key:
+            url = await _image_url_discogs(artist, key, base or None, log_cb=log_cb)
+            if url:
+                set_cached(artist, image_url=url)
+                return url
+        elif name == "Genius" and key:
+            url = await _image_url_genius(artist, key, base or None, log_cb=log_cb)
+            if url:
+                set_cached(artist, image_url=url)
+                return url
     if log_cb and artist:
         log_cb(f"no artist image for {artist!r}")
     return ""

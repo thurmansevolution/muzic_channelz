@@ -7,6 +7,9 @@ import {
   getErsatzTvYmlUrl,
   getBackgrounds,
   getStreamUrl,
+  getChannelLogoUrl,
+  uploadChannelLogo,
+  removeChannelLogo,
   startChannel,
   stopChannel,
   restartChannel,
@@ -23,6 +26,9 @@ export default function ChannelDetail() {
   const [showPlayOverlay, setShowPlayOverlay] = useState(true)
   const [showBufferingOverlay, setShowBufferingOverlay] = useState(false)
   const [backgroundChangeMessage, setBackgroundChangeMessage] = useState(null)
+  const [logoUploading, setLogoUploading] = useState(false)
+  const [logoRemoving, setLogoRemoving] = useState(false)
+  const [logoUpdated, setLogoUpdated] = useState(0)
   const videoRef = useRef(null)
   const hlsRef = useRef(null)
 
@@ -153,6 +159,8 @@ export default function ChannelDetail() {
     await runChannelAction(() => restartChannel(channelId), { bumpStreamKey: true })
   }
 
+  const displayName = channel ? (channel.name || channel.station_name || channel.slug || channel.id) : ''
+
   const handleBackgroundChange = async (bgId) => {
     if (bgId === (channel && channel.background_id)) return
     if (!window.confirm('Changing the background will restart the FFmpeg service for this channel. Continue?')) return
@@ -181,10 +189,10 @@ export default function ChannelDetail() {
       >
         ← Back to channelz
       </button>
-      <div className="flex items-center justify-between gap-4 mb-6">
-        <h1 className="text-2xl font-semibold text-white">
-          {channel.name || channel.slug || channel.id}
-        </h1>
+      <div className="flex items-center justify-between gap-4 mb-6 flex-wrap">
+        <div className="flex items-center gap-2 min-w-0">
+          <h1 className="text-2xl font-semibold text-white truncate">{displayName}</h1>
+        </div>
         <div className="flex flex-wrap gap-2">
           <button
             type="button"
@@ -301,11 +309,66 @@ export default function ChannelDetail() {
           </div>
         </section>
 
-        {/* FFmpeg profile */}
-        <section>
-          <h2 className="text-sm font-medium text-slate-400 uppercase tracking-wider mb-2">FFmpeg profile</h2>
-          <p className="text-white">{channel.ffmpeg_profile_name ?? channel.ffmpeg_profile_id ?? 'default'}</p>
-        </section>
+        {/* FFmpeg profile + Channel logo */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+          <section>
+            <h2 className="text-sm font-medium text-slate-400 uppercase tracking-wider mb-2">FFmpeg profile</h2>
+            <p className="text-white">{channel.ffmpeg_profile_name ?? channel.ffmpeg_profile_id ?? 'default'}</p>
+          </section>
+          <section>
+            <h2 className="text-sm font-medium text-slate-400 uppercase tracking-wider mb-2">Channel logo</h2>
+            <p className="text-slate-400 text-sm mb-2">Shown in XMLTV and program guide. No upload = stock logo is used. A channel restart is required to apply changes.</p>
+            <div className="flex items-center gap-4">
+              <img
+                src={`${getChannelLogoUrl(channelId)}?t=${logoUpdated}`}
+                alt=""
+                className="w-16 h-16 object-contain rounded bg-surface-600 border border-surface-500"
+              />
+              <label className="px-4 py-2 rounded border border-surface-500 text-slate-300 text-sm font-medium hover:bg-surface-600 cursor-pointer">
+                {logoUploading ? 'Uploading…' : 'Upload logo'}
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="sr-only"
+                  disabled={logoUploading || logoRemoving}
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0]
+                    e.target.value = ''
+                    if (!file) return
+                    setLogoUploading(true)
+                    try {
+                      await uploadChannelLogo(channelId, file)
+                      setLogoUpdated(Date.now())
+                    } catch (err) {
+                      console.error(err)
+                    } finally {
+                      setLogoUploading(false)
+                    }
+                  }}
+                />
+              </label>
+              <button
+                type="button"
+                disabled={logoUploading || logoRemoving}
+                onClick={async () => {
+                  if (!window.confirm('Remove the uploaded logo and use the stock logo?')) return
+                  setLogoRemoving(true)
+                  try {
+                    await removeChannelLogo(channelId)
+                    setLogoUpdated(Date.now())
+                  } catch (err) {
+                    console.error(err)
+                  } finally {
+                    setLogoRemoving(false)
+                  }
+                }}
+                className="px-4 py-2 rounded border border-surface-500 text-slate-300 text-sm font-medium hover:bg-surface-600 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {logoRemoving ? 'Removing…' : 'Remove'}
+              </button>
+            </div>
+          </section>
+        </div>
       </div>
     </div>
   )

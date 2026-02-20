@@ -1,6 +1,6 @@
 # muzic channelz
 
-**Music channel streaming** with Azuracast integration, overlay graphics (song, artist, art, bio), and ErsatzTV-ready M3U/YML output. One app to run multiple “TV-style” music channels from your Azuracast stations.
+**Music channel streaming** with Azuracast integration, overlay graphics (song, artist, art, bio), built in tv tuner, and M3U/YML output. One app to run multiple “TV-style” music channels from your Azuracast stations.
 
 - **Free to download, use, and fork** — [MIT License](LICENSE)
 - Default port: **8484** → open `http://localhost:8484`
@@ -18,6 +18,7 @@ docker compose up -d
 ```
 
 Then open **http://localhost:8484**. Data (channels, backgrounds, logs) is stored in a Docker volume.
+When using docker, additional settings (hardware accel, etc) are found in the docker-compose.yml
 
 
 ---
@@ -49,8 +50,8 @@ Or from project root: `./start.sh`
 
 | Section           | Purpose |
 |------------------|--------|
-| **Channelz**     | Grid of channels: live stream, background, M3U/ErsatzTV YML download |
-| **Administration** | Azuracast stations, metadata providers (artist bio), FFmpeg profiles, start/stop service |
+| **Channelz**     | Grid of channels: live stream, background, cusom logo upload, M3U/YML download |
+| **Administration** | Azuracast stations, metadata providers (artist bio), FFmpeg profiles, tv tuner setup, start/stop service |
 | **Background Editor** | Upload images, place overlays (song, artist, art, bio), assign to channels |
 | **Live Logs**    | Per-channel FFmpeg and app logs |
 

@@ -1,12 +1,17 @@
-"""Channels API: list, m3u, yml for ErsatzTV."""
+"""Channels API: list, m3u, yml for ErsatzTV, HDHomeRun-style playlist and guide."""
 from __future__ import annotations
 
 import asyncio
+import base64
 import re
 import socket
+from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, HTTPException
-from fastapi.responses import PlainTextResponse, Response
+from pathlib import Path
+
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, PlainTextResponse, Response
+from app.config import settings
 from app.store import load_admin_state, save_admin_state
 from app.models import Channel
 from app import services
@@ -47,6 +52,40 @@ def _server_base_url() -> str:
 router = APIRouter(prefix="/api/channels", tags=["channels"])
 
 
+def _channel_logos_dir() -> Path:
+    d = settings.data_dir / "channel_logos"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _stock_logo_path() -> Path | None:
+    """Return path to default logo (tries frontend/public, then app/static for Docker)."""
+    # __file__ is app/routers/channels.py -> parent.parent.parent is project root
+    root = Path(__file__).resolve().parent.parent.parent
+    for p in (root / "frontend" / "public" / "logo.png", root / "app" / "static" / "default-art.png"):
+        if p.is_file():
+            return p
+    return None
+
+
+def _channel_logo_bytes(channel_id: str) -> bytes | None:
+    """Return PNG bytes for the channel logo (custom if uploaded, else stock), or None if no file."""
+    logos_dir = _channel_logos_dir()
+    custom = logos_dir / f"{channel_id}.png"
+    if custom.is_file():
+        try:
+            return custom.read_bytes()
+        except OSError:
+            pass
+    stock = _stock_logo_path()
+    if stock:
+        try:
+            return stock.read_bytes()
+        except OSError:
+            pass
+    return None
+
+
 def _profile_name_for_channel(state, ffmpeg_profile_id: str) -> str:
     """Resolve FFmpeg profile id (or legacy name) to its display name."""
     if not ffmpeg_profile_id:
@@ -59,10 +98,20 @@ def _profile_name_for_channel(state, ffmpeg_profile_id: str) -> str:
             return p.name or ffmpeg_profile_id
         if pname == (ffmpeg_profile_id or "").strip():
             return p.name or ffmpeg_profile_id
-    # Resolve profile by id; if missing and only one profile exists, use it
     if len(profiles) == 1:
         return profiles[0].name or ffmpeg_profile_id
     return ffmpeg_profile_id
+
+
+def _station_name_for_channel(state, channel) -> str:
+    """Resolve channel's Azuracast station to its display name (for default channel name)."""
+    want = (getattr(channel, "azuracast_station_id", None) or "").strip()
+    if not want:
+        return ""
+    for st in state.azuracast_stations or []:
+        if (st.name or "").strip() == want or (st.station_shortcode or "").strip() == want:
+            return (st.name or "").strip() or (st.station_shortcode or "").strip()
+    return ""
 
 
 @router.get("")
@@ -73,8 +122,134 @@ async def list_channels() -> list[dict]:
         d = c.model_dump()
         d["is_running"] = services.is_running(c.id)
         d["ffmpeg_profile_name"] = _profile_name_for_channel(state, c.ffmpeg_profile_id or "")
+        d["station_name"] = _station_name_for_channel(state, c)
         out.append(d)
     return out
+
+
+@router.get("/playlist.m3u")
+async def get_playlist_m3u():
+    """Return a single M3U with all enabled channels for use in IPTV clients."""
+    state = await load_admin_state()
+    base = _server_base_url()
+    channels = [c for c in (state.channels or []) if c.enabled]
+    out_lines = ["#EXTM3U"]
+    for i, c in enumerate(channels):
+        ch_num = _guide_number(c, i)
+        name = (c.name or _station_name_for_channel(state, c) or c.slug or c.id or "Channel").replace(",", " ")
+        out_lines.append(f'#EXTINF:-1 tvg-chno="{ch_num}" tvg-name="{name}" group-title="muzic channelz",{name}')
+        out_lines.append(f"{base}/stream/{c.id}/index.m3u8")
+    body = "\n".join(out_lines) + "\n"
+    return Response(
+        content=body,
+        media_type="audio/x-mpegurl",
+        headers={
+            "Content-Disposition": 'attachment; filename="playlist.m3u"',
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+        },
+    )
+
+
+def _guide_number(c, index: int) -> int:
+    """Guide number for a channel (XMLTV/HDHomeRun). Uses guide_number if set, else 800+index (cable-style)."""
+    n = getattr(c, "guide_number", None)
+    if n is not None and n > 0:
+        return n
+    return 800 + index
+
+
+@router.get("/guide.xml")
+async def get_guide_xml(request: Request):
+    """Return XMLTV guide for all enabled channels. Channel id matches HDHomeRun GuideNumber.
+    Uses request base URL for icon URLs so Plex (and other clients) can fetch logos from the same origin as the guide."""
+    state = await load_admin_state()
+    base = str(request.base_url).rstrip("/")
+    channels = [c for c in (state.channels or []) if c.enabled]
+    now = datetime.now(timezone.utc)
+    start_ts = now.strftime("%Y%m%d%H%M%S") + " +0000"
+    end_dt = now + timedelta(hours=24)
+    end_ts = end_dt.strftime("%Y%m%d%H%M%S") + " +0000"
+    parts = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<tv'
+        ' source-info-name="muzic channelz"'
+        ' source-info-url="' + base + '"'
+        ' generator-info-name="muzic channelz"'
+        ' generator-info-url="' + base + '">',
+    ]
+    for i, c in enumerate(channels):
+        ch_num = _guide_number(c, i)
+        ch_id = str(ch_num)
+        name = (c.name or _station_name_for_channel(state, c) or c.slug or c.id or "Channel").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        parts.append(f'  <channel id="{ch_id}">')
+        parts.append(f"    <display-name>{ch_num} {name}</display-name>")
+        parts.append(f"    <display-name>{ch_num}</display-name>")
+        parts.append(f"    <display-name>{name}</display-name>")
+        # Use URL (same origin as guide) so Plex can fetch icons; data URI is not reliably supported.
+        icon_src = f"{base}/api/channels/logo/{c.id}.png"
+        parts.append(f'    <icon src="{icon_src}" width="120" height="120"/>')
+        parts.append("  </channel>")
+    for i, c in enumerate(channels):
+        ch_num = _guide_number(c, i)
+        ch_id = str(ch_num)
+        name = (c.name or _station_name_for_channel(state, c) or c.slug or c.id or "Channel").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        parts.append("  <programme start=\"" + start_ts + "\" stop=\"" + end_ts + f"\" channel=\"{ch_id}\">")
+        parts.append(f"    <title>{name}</title>")
+        parts.append("    <desc>Live music channel</desc>")
+        parts.append("  </programme>")
+    parts.append("</tv>")
+    body = "\n".join(parts)
+    return Response(
+        content=body.encode("utf-8"),
+        media_type="application/xml; charset=utf-8",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+    )
+
+
+@router.get("/logo/{channel_id}")
+async def get_channel_logo(channel_id: str):
+    """Serve channel logo (e.g. for M3U clients). The XMLTV guide embeds logos as inline base64 so Plex displays them without HTTP/HTTPS or CORS issues. Accepts .../logo/id or .../logo/id.png."""
+    if channel_id.endswith(".png"):
+        channel_id = channel_id[:-4]
+    state = await load_admin_state()
+    if not next((c for c in (state.channels or []) if c.id == channel_id), None):
+        raise HTTPException(404, "Channel not found")
+    logos_dir = _channel_logos_dir()
+    custom = logos_dir / f"{channel_id}.png"
+    if custom.is_file():
+        return FileResponse(custom, media_type="image/png")
+    stock = _stock_logo_path()
+    if stock:
+        return FileResponse(stock, media_type="image/png")
+    raise HTTPException(404, "No logo available")
+
+
+@router.post("/logo/{channel_id}")
+async def upload_channel_logo(channel_id: str, file: UploadFile = File(...)):
+    """Upload a custom channel logo (used in XMLTV/guide). Replaces existing. PNG recommended."""
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(400, "File must be an image")
+    state = await load_admin_state()
+    if not next((c for c in (state.channels or []) if c.id == channel_id), None):
+        raise HTTPException(404, "Channel not found")
+    logos_dir = _channel_logos_dir()
+    path = logos_dir / f"{channel_id}.png"
+    content = await file.read()
+    path.write_bytes(content)
+    return {"ok": True, "channel_id": channel_id}
+
+
+@router.delete("/logo/{channel_id}")
+async def remove_channel_logo(channel_id: str):
+    """Remove the uploaded channel logo so the stock logo is used again."""
+    state = await load_admin_state()
+    if not next((c for c in (state.channels or []) if c.id == channel_id), None):
+        raise HTTPException(404, "Channel not found")
+    logos_dir = _channel_logos_dir()
+    path = logos_dir / f"{channel_id}.png"
+    if path.is_file():
+        path.unlink()
+    return {"ok": True, "channel_id": channel_id}
 
 
 @router.get("/{channel_id}/m3u")

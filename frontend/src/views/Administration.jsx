@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { getAdminState, saveAdminState, startService, stopService, exportBackup, restoreBackup, clearMetadataCache } from '../api'
+import { getAdminState, saveAdminState, startService, stopService, exportBackup, restoreBackup, clearMetadataCache, getPlaylistM3uUrl, getGuideXmlUrl, getPublicBaseUrl } from '../api'
 
 const defaultStation = () => ({ name: '', base_url: '', api_key: '', station_shortcode: '' })
 const defaultProfile = () => ({
@@ -22,7 +22,15 @@ const FFMPEG_PRESETS = {
   'veryslow': { preset: 'veryslow', video_codec: 'libx264', video_bitrate: '1M', audio_bitrate: '192k' },
   'custom': { preset: 'medium', video_codec: 'libx264', video_bitrate: '2M', audio_bitrate: '192k' },
 }
-const defaultChannel = () => ({ id: crypto.randomUUID?.() ?? `ch_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`, name: '', slug: '', azuracast_station_id: '', ffmpeg_profile_id: '', background_id: 'stock', stream_port: 0, enabled: true, extra: {} })
+const defaultChannel = () => ({ id: crypto.randomUUID?.() ?? `ch_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`, name: '', slug: '', azuracast_station_id: '', ffmpeg_profile_id: '', background_id: 'stock', stream_port: 0, enabled: true, guide_number: null, extra: {} })
+
+async function copyUrlToClipboard(url) {
+  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(url)
+    return true
+  }
+  return false
+}
 
 function hasExtendedCustomization(prof) {
   return (
@@ -45,6 +53,13 @@ export default function Administration() {
   const [serviceAction, setServiceAction] = useState(null)
   const [backupAction, setBackupAction] = useState(null)
   const [restoreError, setRestoreError] = useState(null)
+  const [copiedUrlType, setCopiedUrlType] = useState(null) // 'm3u' | 'xmltv' | null
+  const [publicBaseUrl, setPublicBaseUrl] = useState(null)
+  const copyConfirmTimeoutRef = useRef(null)
+
+  useEffect(() => {
+    getPublicBaseUrl().then(setPublicBaseUrl).catch(() => setPublicBaseUrl(null))
+  }, [])
 
   useEffect(() => {
     getAdminState().then(setState).catch(() => setState({
@@ -56,11 +71,43 @@ export default function Administration() {
     }))
   }, [])
 
+  useEffect(() => {
+    return () => {
+      if (copyConfirmTimeoutRef.current) clearTimeout(copyConfirmTimeoutRef.current)
+    }
+  }, [])
+
   const update = (fn) => setState((s) => (s ? fn(s) : s))
   const [saveNotify, setSaveNotify] = useState(null)
   const [cacheNotify, setCacheNotify] = useState(null)
   const [extendedOpen, setExtendedOpen] = useState({})
   const [restartOverlay, setRestartOverlay] = useState(false)
+
+  const handleCopyUrl = async (urlOrFull, type) => {
+    if (copyConfirmTimeoutRef.current) clearTimeout(copyConfirmTimeoutRef.current)
+    const fullUrl = (typeof urlOrFull === 'string' && urlOrFull.startsWith('http')) ? urlOrFull : (typeof window !== 'undefined' ? `${window.location.origin}${urlOrFull}` : urlOrFull)
+    let ok = await copyUrlToClipboard(fullUrl)
+    if (!ok && typeof document !== 'undefined') {
+      try {
+        const el = document.createElement('input')
+        el.value = fullUrl
+        el.setAttribute('readonly', '')
+        el.style.position = 'absolute'
+        el.style.left = '-9999px'
+        document.body.appendChild(el)
+        el.select()
+        ok = document.execCommand('copy')
+        document.body.removeChild(el)
+      } catch (_) {}
+    }
+    if (ok) {
+      setCopiedUrlType(type)
+      copyConfirmTimeoutRef.current = setTimeout(() => {
+        setCopiedUrlType(null)
+        copyConfirmTimeoutRef.current = null
+      }, 2000)
+    }
+  }
 
   const save = async () => {
     if (!state) return
@@ -197,11 +244,87 @@ export default function Administration() {
         {state.service_started && <p className="mt-2 text-sm text-green-400">Service is running.</p>}
       </section>
 
+      {/* HDHomeRun / Live TV */}
+      <section className="mb-8 rounded-xl border border-surface-500 bg-surface-700/50 p-6">
+        <h2 className="text-lg font-medium text-white mb-4">TV Tuner </h2>
+        <p className="text-slate-400 text-sm mb-4">
+          Add this server as a HDHomerun tuner (in Plex or Jellyfin) and adjust the amount of tuners you would like to use. Making adjustments to this section will require a service restart.
+        </p>
+        <div className="space-y-3 mb-4">
+          <div>
+            <label className="block text-sm font-medium text-slate-300 mb-1">UUID</label>
+            <input
+              type="text"
+              placeholder="Leave empty to auto-generate"
+              value={state.hdhr_uuid ?? ''}
+              onChange={(e) => update((s) => ({ ...s, hdhr_uuid: e.target.value.trim() }))}
+              className="w-full px-3 py-2 rounded bg-surface-600 border border-surface-500 text-white placeholder-slate-500 font-mono text-sm"
+            />
+            <p className="text-xs text-slate-500 mt-1">Unique identifier for this tuner. Empty = generate on first use.</p>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-300 mb-1">Tuner count</label>
+            <input
+              type="number"
+              min={1}
+              max={32}
+              value={state.hdhr_tuner_count ?? 4}
+              onChange={(e) => update((s) => ({ ...s, hdhr_tuner_count: Math.max(1, Math.min(32, parseInt(e.target.value, 10) || 4)) }))}
+              className="w-24 px-3 py-2 rounded bg-surface-600 border border-surface-500 text-white"
+            />
+            <p className="text-xs text-slate-500 mt-1">Number of virtual tuners (1–32).</p>
+          </div>
+        </div>
+        <div className="space-y-3 pt-3 border-t border-surface-500">
+          {(() => {
+            const baseUrl = publicBaseUrl || (typeof window !== 'undefined' ? window.location.origin : '')
+            const m3uFull = baseUrl ? `${baseUrl}${getPlaylistM3uUrl()}` : getPlaylistM3uUrl()
+            const xmltvFull = baseUrl ? `${baseUrl}${getGuideXmlUrl()}` : getGuideXmlUrl()
+            return (
+              <>
+                <div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <label className="text-sm font-medium text-slate-300">M3U</label>
+                    {copiedUrlType === 'm3u' && <span className="text-sm text-green-400">URL copied to clipboard</span>}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <input
+                      type="text"
+                      readOnly
+                      value={m3uFull}
+                      className="flex-1 min-w-[200px] px-3 py-2 rounded bg-surface-600 border border-surface-500 text-slate-300 text-sm font-mono"
+                    />
+                    <a href={m3uFull.startsWith('http') ? m3uFull : '#'} target="_blank" rel="noreferrer" className="px-3 py-2 rounded border border-surface-500 text-accent-400 text-sm font-medium hover:bg-surface-600">Open</a>
+                    <button type="button" onClick={() => handleCopyUrl(m3uFull, 'm3u')} className="px-3 py-2 rounded border border-surface-500 text-slate-300 text-sm font-medium hover:bg-surface-600">Copy URL</button>
+                  </div>
+                </div>
+                <div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <label className="text-sm font-medium text-slate-300">XMLTV</label>
+                    {copiedUrlType === 'xmltv' && <span className="text-sm text-green-400">URL copied to clipboard</span>}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <input
+                      type="text"
+                      readOnly
+                      value={xmltvFull}
+                      className="flex-1 min-w-[200px] px-3 py-2 rounded bg-surface-600 border border-surface-500 text-slate-300 text-sm font-mono"
+                    />
+                    <a href={xmltvFull.startsWith('http') ? xmltvFull : '#'} target="_blank" rel="noreferrer" className="px-3 py-2 rounded border border-surface-500 text-accent-400 text-sm font-medium hover:bg-surface-600">Open</a>
+                    <button type="button" onClick={() => handleCopyUrl(xmltvFull, 'xmltv')} className="px-3 py-2 rounded border border-surface-500 text-slate-300 text-sm font-medium hover:bg-surface-600">Copy URL</button>
+                  </div>
+                </div>
+              </>
+            )
+          })()}
+        </div>
+      </section>
+
       {/* Backup & restore */}
       <section className="mb-8 rounded-xl border border-surface-500 bg-surface-700/50 p-6">
         <h2 className="text-lg font-medium text-white mb-4">Backup & restore</h2>
         <p className="text-slate-400 text-sm mb-4">
-          Export a full backup (admin state, channels, FFmpeg profiles, Azuracast stations, and custom background images) to a JSON file. Restore on a new install by uploading that file. Restore will stop the service and replace the current configuration.
+          Export a full backup (admin state, channels, FFmpeg profiles, Azuracast stations, custom background images, and custom channel logos) to a JSON file. Restore on a new install by uploading that file. Restore will stop the service and replace the current configuration.
         </p>
         <div className="flex flex-wrap items-center gap-4">
           <button
@@ -247,12 +370,13 @@ export default function Administration() {
                     setRestoreError('Invalid backup file: missing admin_state or backgrounds.')
                     return
                   }
-                  if (!window.confirm('Restore will stop the service and replace all configuration and custom backgrounds. Continue?')) return
+                  if (!window.confirm('Restore will stop the service and replace all configuration, custom backgrounds, and custom channel logos. Continue?')) return
                   setBackupAction('restoring')
                   await restoreBackup({
                     admin_state: payload.admin_state,
                     backgrounds: payload.backgrounds,
                     background_images: payload.background_images || {},
+                    channel_logos: payload.channel_logos || {},
                   })
                   const next = await getAdminState()
                   setState(next)
@@ -333,7 +457,7 @@ export default function Administration() {
       <section className="mb-8">
         <h2 className="text-lg font-medium text-white mb-3">metadata providers</h2>
         <p className="text-slate-400 text-sm mb-3">
-          Optional. Used to fill the <strong>Artist bio</strong>, <strong>Artist name</strong>, <strong>Artist image</strong>, and other metadata information in live channelz. <strong>Custom</strong>: use base URL and API key for your own provider.</p>
+          Optional. Used to fill the <strong>Artist bio</strong> and <strong>Artist image</strong> in live channelz. <strong>Custom</strong>: base URL and API key for your own provider.</p>
         {(state.metadata_providers || []).map((prov, i) => {
           const knownProviders = ['MusicBrainz', 'Last.fm', 'TheAudioDB', 'Discogs', 'Spotify', 'Genius', 'iTunes', 'Deezer', 'Custom']
           const isCustom = prov.name && !knownProviders.includes(prov.name)
@@ -377,7 +501,7 @@ export default function Administration() {
               className="w-full px-3 py-2 rounded bg-surface-600 border border-surface-500 text-white"
             />
             <input
-              placeholder="API key / token"
+              placeholder={selectedProvider === 'Spotify' ? 'Client ID:Client Secret' : 'API key / token'}
               type="password"
               value={prov.api_key_or_token}
               onChange={(e) => update((s) => ({ ...s, metadata_providers: s.metadata_providers.map((p, j) => (j === i ? { ...p, api_key_or_token: e.target.value } : p)) }))}

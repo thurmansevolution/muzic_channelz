@@ -235,6 +235,17 @@ def get_running_channel_ids() -> list[str]:
     return list(_running.keys())
 
 
+def _get_station_name_for_channel(channel: Channel, state: AdminState) -> str:
+    """Resolve channel's Azuracast station to its display name (for default channel name)."""
+    want = (channel.azuracast_station_id or "").strip()
+    if not want:
+        return ""
+    for st in state.azuracast_stations:
+        if (st.name or "").strip() == want or (st.station_shortcode or "").strip() == want:
+            return (st.name or "").strip() or (st.station_shortcode or "").strip()
+    return ""
+
+
 def _get_azuracast_listen_url(channel: Channel, state: AdminState) -> str | None:
     """Resolve channel's Azuracast station to the listen stream URL (e.g. .../listen/station_slug/radio.mp3)."""
     want = (channel.azuracast_station_id or "").strip()
@@ -358,12 +369,13 @@ async def _start_single_channel(channel: Channel, state: AdminState, index: int)
     artist_fs = artist_pl.font_size if artist_pl and artist_pl.font_size else 28
     artist_fc = norm_color(artist_pl.font_color) if artist_pl else "white"
     artist_sc = norm_color(artist_pl.shadow_color) if artist_pl else "black"
-    bio_x_default = _sx(480)
-    bio_y_default = _sy(270)
+    bio_x_default = _sx(435)
+    bio_y_default = _sy(250)
     bio_fs_default = 26
     await write_now_playing_files(out_dir, channel, state)
     channel_name_txt = out_dir / "channel_name.txt"
-    channel_name_txt.write_text((channel.name or channel.slug or channel.id or "Channel").strip() or "—", encoding="utf-8")
+    display_name = (channel.name or _get_station_name_for_channel(channel, state) or channel.slug or channel.id or "Channel").strip() or "—"
+    channel_name_txt.write_text(display_name, encoding="utf-8")
     song_txt = out_dir / "song.txt"
     artist_txt = out_dir / "artist.txt"
     bio_txt = out_dir / "bio.txt"
@@ -562,7 +574,11 @@ async def _start_single_channel(channel: Channel, state: AdminState, index: int)
             cmd.extend(["-profile:v", (profile.video_profile or "").strip()])
         if not getattr(profile, "allow_bframes", True):
             cmd.extend(["-bf", "0"])
-    cmd.extend(["-g", str(gop_size), "-keyint_min", str(gop_size)])
+    cmd.extend([
+        "-g", str(gop_size),
+        "-keyint_min", str(gop_size),
+        "-force_key_frames", f"expr:gte(t,n_forced*{hls_time_sec})",
+    ])
 
     if not use_hw:
         cmd.extend(["-preset", profile.preset])
@@ -593,7 +609,7 @@ async def _start_single_channel(channel: Channel, state: AdminState, index: int)
         "-hls_segment_type", "mpegts",
         "-hls_time", str(hls_time_sec),
         "-hls_list_size", str(hls_list_size_val),
-        "-hls_flags", "delete_segments",
+        "-hls_flags", "delete_segments+program_date_time+omit_endlist+independent_segments",
         str(output_path),
     ])
     cmd.extend(profile.extra_args)

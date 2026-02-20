@@ -100,6 +100,8 @@ class Channel(BaseModel):
     background_id: str = "stock"
     stream_port: int = 0
     enabled: bool = True
+    # Guide number for XMLTV/HDHomeRun lineup. None = auto (800, 801, ...).
+    guide_number: int | None = None
     extra: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -111,3 +113,5 @@ class AdminState(BaseModel):
     ffmpeg_settings: FFmpegSettings | None = None
     channels: list[Channel] = Field(default_factory=list)
     service_started: bool = False
+    hdhr_uuid: str = ""
+    hdhr_tuner_count: int = 4

@@ -1,4 +1,5 @@
 # muzic channelz - Docker image (Debian-based), version 1.0
+# syntax=docker/dockerfile:1
 # Build frontend
 FROM node:20-alpine AS frontend
 WORKDIR /app/frontend
@@ -14,7 +15,9 @@ LABEL org.opencontainers.image.title="muzic-channelz" \
       org.opencontainers.image.description="Music channel streaming with Azuracast, overlay, and ErsatzTV output"
 
 WORKDIR /app
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Use BuildKit cache mount so downloaded .deb files are reused across builds (first build still downloads once)
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libcairo2 \
     libgdk-pixbuf2.0-0 \

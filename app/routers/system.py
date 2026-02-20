@@ -1,9 +1,34 @@
-"""System API: resource usage for Home dashboard."""
+"""System API: resource usage for Home dashboard and public URL for M3U/XMLTV."""
 from __future__ import annotations
+
+import os
+import socket
 
 from fastapi import APIRouter
 
+from app.config import settings
+
 router = APIRouter(prefix="/api/system", tags=["system"])
+
+
+def _local_ip() -> str:
+    """Return this machine's LAN IP (for URLs usable from other devices)."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
+
+@router.get("/public-url")
+async def get_public_url() -> dict:
+    """Return the base URL to use for M3U/XMLTV so it works from other devices (uses LAN IP or MUZIC_PUBLIC_HOST)."""
+    host = (os.environ.get("MUZIC_PUBLIC_HOST") or "").strip() or _local_ip()
+    base_url = f"http://{host}:{settings.port}"
+    return {"base_url": base_url}
 
 
 def _app_process_stats(psutil_mod):

@@ -31,8 +31,8 @@ def _escape_drawtext(s: str) -> str:
     return s.replace("\\", "\\\\").replace("'", "\\'").replace(":", "\\:").replace("%", "\\%")
 
 
-def _wrap_text(text: str, max_chars_per_line: int = 48) -> str:
-    """Wrap text into lines of at most max_chars_per_line (break at spaces). For drawtext multiline display."""
+def _wrap_text(text: str, max_chars_per_line: int = 48, max_lines: int | None = None) -> str:
+    """Wrap text into lines of at most max_chars_per_line (break at spaces). Optionally limit to max_lines so overlay stays within bounds (e.g. above artist image)."""
     if not text or max_chars_per_line <= 0:
         return text or ""
     text = (text or "").strip().replace("\n", " ")
@@ -52,6 +52,8 @@ def _wrap_text(text: str, max_chars_per_line: int = 48) -> str:
         else:
             lines.append(rest[:max_chars_per_line])
             rest = rest[max_chars_per_line:].lstrip()
+    if max_lines is not None and max_lines > 0 and len(lines) > max_lines:
+        lines = lines[:max_lines]
     return "\n".join(lines)
 
 
@@ -119,6 +121,17 @@ def _default_art_path() -> Path | None:
     return None
 
 
+def _fallback_art_path(channel: Channel) -> tuple[Path | None, str]:
+    """Return (path, kind) for no-artist-art fallback: (1) custom channel logo if uploaded, (2) default muzic channelz logo. kind is 'channel_logo' | 'default'."""
+    from app.config import settings
+    logos_dir = settings.data_dir / "channel_logos"
+    custom = logos_dir / f"{channel.id}.png"
+    if custom.is_file():
+        return (custom, "channel_logo")
+    default = _default_art_path()
+    return (default, "default" if default else "placeholder")
+
+
 async def write_now_playing_files(
     stream_dir: Path,
     channel: Channel,
@@ -131,10 +144,10 @@ async def write_now_playing_files(
         stream_dir.joinpath("song.txt").write_text("—", encoding="utf-8")
         stream_dir.joinpath("artist.txt").write_text("—", encoding="utf-8")
         stream_dir.joinpath("bio.txt").write_text("—", encoding="utf-8")
-        default_art = _default_art_path()
-        if default_art:
+        fallback_path, _ = _fallback_art_path(channel)
+        if fallback_path:
             import shutil
-            shutil.copy2(default_art, stream_dir / "art.png")
+            shutil.copy2(fallback_path, stream_dir / "art.png")
         else:
             _ensure_placeholder_art(stream_dir / "art.png")
         return ("—", "—")
@@ -202,11 +215,14 @@ async def write_now_playing_files(
         except Exception as e:
             _log(f"art download error: {e}")
     if not art_resolved:
-        default_art = _default_art_path()
-        if default_art:
+        fallback_path, fallback_kind = _fallback_art_path(channel)
+        if fallback_path:
             import shutil
-            shutil.copy2(default_art, art_path)
-            _log("art: using default icon (no artist image)")
+            shutil.copy2(fallback_path, art_path)
+            if fallback_kind == "channel_logo":
+                _log("art: using channel logo (no artist image)")
+            else:
+                _log("art: using default icon (no artist image)")
         else:
             _ensure_placeholder_art(art_path)
             _log("art: using generated placeholder (no artist image)")
@@ -214,7 +230,8 @@ async def write_now_playing_files(
     await asyncio.sleep(1.0)
     stream_dir.joinpath("song.txt").write_text(_wrap_text(title, 56), encoding="utf-8")
     stream_dir.joinpath("artist.txt").write_text(artist, encoding="utf-8")
-    stream_dir.joinpath("bio.txt").write_text(_wrap_text(bio, 48), encoding="utf-8")
+    # Allow bio to extend a little below the artist image (default: image bottom ~430px, bio starts ~250px, ~30px/line; 9 lines -> ~520px)
+    stream_dir.joinpath("bio.txt").write_text(_wrap_text(bio, 48, max_lines=9), encoding="utf-8")
     return (title, artist)
 
 

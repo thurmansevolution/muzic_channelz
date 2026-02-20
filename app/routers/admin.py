@@ -125,16 +125,23 @@ async def stop_service() -> dict:
     return {"ok": True}
 
 
+def _channel_logos_dir():
+    d = settings.data_dir / "channel_logos"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 @router.get("/backup")
 async def export_backup(include_images: bool = True) -> JSONResponse:
-    """Export full config backup: admin state + backgrounds index + optional base64 background images."""
+    """Export full config backup: admin state, backgrounds (+ images), and custom channel logos."""
     state = await load_admin_state()
     backgrounds = await load_backgrounds()
     payload = {
-        "version": 1,
+        "version": 2,
         "admin_state": state.model_dump(),
         "backgrounds": [b.model_dump() for b in backgrounds],
         "background_images": {},
+        "channel_logos": {},
     }
     if include_images and settings.backgrounds_dir:
         root = settings.backgrounds_dir
@@ -147,6 +154,16 @@ async def export_backup(include_images: bool = True) -> JSONResponse:
                     payload["background_images"][b.id] = base64.b64encode(path.read_bytes()).decode("ascii")
                 except OSError:
                     pass
+    logos_dir = _channel_logos_dir()
+    for c in state.channels or []:
+        if not c.id:
+            continue
+        path = logos_dir / f"{c.id}.png"
+        if path.exists():
+            try:
+                payload["channel_logos"][c.id] = base64.b64encode(path.read_bytes()).decode("ascii")
+            except OSError:
+                pass
     return JSONResponse(content=payload)
 
 
@@ -156,6 +173,7 @@ class RestoreBody(BaseModel):
     admin_state: dict
     backgrounds: list[dict]
     background_images: dict[str, str] = {}
+    channel_logos: dict[str, str] = {}
 
 
 @router.post("/restore")
@@ -183,6 +201,20 @@ async def restore_backup(body: RestoreBody) -> dict:
 
     templates = [BackgroundTemplate.model_validate(b) for b in (body.backgrounds or [])]
     await save_backgrounds(templates)
+
+    logos_dir = _channel_logos_dir()
+    for channel_id, b64 in (body.channel_logos or {}).items():
+        if not channel_id or not isinstance(b64, str):
+            continue
+        try:
+            raw = base64.b64decode(b64, validate=True)
+        except Exception:
+            continue
+        path = logos_dir / f"{channel_id}.png"
+        try:
+            path.write_bytes(raw)
+        except OSError:
+            pass
 
     return {"ok": True, "message": "Configuration restored. Start the service to apply."}
 
