@@ -78,7 +78,7 @@ export default function Home() {
           <div className="relative">
             <h1 className="text-3xl sm:text-4xl font-bold text-white tracking-tight">muzic channelz</h1>
             <p className="mt-2 text-slate-400 text-sm sm:text-base max-w-xl">
-              Create and stream live music channels from an Azuracast server to ErsatzTV (or any IPTV server that uses m3u files for streaming).
+              Create live steaming music channels from an Azuracast server.
             </p>
           </div>
         </div>
