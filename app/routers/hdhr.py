@@ -158,6 +158,12 @@ async def stream_channel_ts(channel_id: str):
                 if not chunk:
                     break
                 yield chunk
+        except asyncio.CancelledError:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            raise
         finally:
             try:
                 proc.kill()
@@ -167,5 +173,5 @@ async def stream_channel_ts(channel_id: str):
     return StreamingResponse(
         generate(),
         media_type="video/mp2t",
-        headers={"Cache-Control": "no-store"},
+        headers={"Cache-Control": "no-store", "Connection": "close"},
     )
