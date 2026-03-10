@@ -44,6 +44,18 @@ export async function updateChannel(id, body) {
   return r.json()
 }
 
+export async function stopChannel(channelId, grace = false) {
+  const url = grace
+    ? `${BASE}/api/channels/${encodeURIComponent(channelId)}/stop?grace=true`
+    : `${BASE}/api/channels/${encodeURIComponent(channelId)}/stop`
+  const r = await fetch(url, { method: 'POST' })
+  if (!r.ok) throw new Error(r.statusText)
+  return r.json()
+}
+
+export async function startChannel(channelId) {
+  return ensureStream(channelId)
+}
 
 export function getM3uUrl(channelId) {
   return `${BASE}/api/channels/${channelId}/m3u`
