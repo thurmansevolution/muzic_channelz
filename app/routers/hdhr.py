@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import socket
+import time
 import uuid as uuid_mod
 
 from fastapi import APIRouter, HTTPException, Request
@@ -101,6 +102,7 @@ def _lineup_channel_list(state, base: str):
             "GuideNumber": str(ch_num),
             "GuideName": name,
             "URL": f"{base}/hdhr/stream/{c.id}",
+            "ImageURL": f"{base}/api/channels/logo/{c.id}",
         })
     return out
 
@@ -132,43 +134,95 @@ async def guide_xml(request: Request):
 
 
 @router.get("/hdhr/stream/{channel_id}")
-async def stream_channel_ts(channel_id: str):
+async def stream_channel_ts(channel_id: str, request: Request):
     """Stream channel as MPEG-TS for HDHomeRun clients. Converts HLS to TS on the fly."""
+    from app import services
     state = await load_admin_state()
     ch = next((c for c in (state.channels or []) if c.id == channel_id and c.enabled), None)
     if not ch:
         raise HTTPException(404, "Channel not found")
+
+    if getattr(state, "service_started", False):
+        await services.start_channel(channel_id)
+
+    hls_file = settings.data_dir / "streams" / channel_id / "index.m3u8"
+    if not hls_file.is_file():
+        for _ in range(20):
+            await asyncio.sleep(1)
+            if hls_file.is_file():
+                break
+    if not hls_file.is_file():
+        raise HTTPException(503, "Channel not ready — try again shortly")
+
     hls_url = f"http://127.0.0.1:{settings.port}/stream/{channel_id}/index.m3u8"
+    log_path = settings.data_dir / "logs" / f"ffmpeg_hdhr_{channel_id}.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    from app import services
+    from app.ffmpeg_runner import append_app_log
 
     async def generate():
+        services.notify_stream_request(channel_id)
+        stderr_f = open(log_path, "ab")
         proc = await asyncio.create_subprocess_exec(
             "ffmpeg",
             "-y",
-            "-loglevel", "error",
+            "-loglevel", "warning",
+            "-reconnect", "1",
+            "-reconnect_at_eof", "1",
+            "-reconnect_streamed", "1",
+            "-reconnect_delay_max", "5",
             "-i", hls_url,
             "-c", "copy",
             "-f", "mpegts",
             "-",
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
+            stderr=stderr_f,
         )
+        append_app_log(f"hdhr/{channel_id}: conversion ffmpeg started (pid={proc.pid})", "debug")
         try:
             while proc.stdout:
-                chunk = await proc.stdout.read(65536)
-                if not chunk:
-                    break
-                yield chunk
-        except asyncio.CancelledError:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-            raise
+                services.notify_stream_request(channel_id)
+                read_task = asyncio.create_task(proc.stdout.read(65536))
+                disconnect_task = asyncio.create_task(request.is_disconnected())
+                done, pending = await asyncio.wait(
+                    [read_task, disconnect_task],
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for t in pending:
+                    t.cancel()
+                    try:
+                        await t
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                if disconnect_task in done:
+                    try:
+                        if disconnect_task.result():
+                            append_app_log(f"hdhr/{channel_id}: client disconnected", "debug")
+                            break
+                    except Exception:
+                        break
+                if read_task in done:
+                    try:
+                        chunk = read_task.result()
+                    except Exception:
+                        break
+                    if not chunk:
+                        break
+                    yield chunk
+        except (asyncio.CancelledError, Exception):
+            pass
         finally:
+            stderr_f.close()
             try:
                 proc.kill()
             except ProcessLookupError:
                 pass
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=3.0)
+            except Exception:
+                pass
+            append_app_log(f"hdhr/{channel_id}: conversion ffmpeg ended (returncode={proc.returncode})", "debug")
 
     return StreamingResponse(
         generate(),

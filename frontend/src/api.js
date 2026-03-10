@@ -16,14 +16,13 @@ export async function saveAdminState(state) {
   return r.json()
 }
 
-export async function startService() {
+export async function startServer() {
   const r = await fetch(`${BASE}/api/admin/start-service`, { method: 'POST' })
-  const data = await r.json().catch(() => ({}))
-  if (!r.ok) throw new Error(data?.detail || data?.message || r.statusText)
-  return data
+  if (!r.ok) throw new Error(r.statusText)
+  return r.json()
 }
 
-export async function stopService() {
+export async function stopServer() {
   const r = await fetch(`${BASE}/api/admin/stop-service`, { method: 'POST' })
   if (!r.ok) throw new Error(r.statusText)
   return r.json()
@@ -32,24 +31,6 @@ export async function stopService() {
 export async function getChannels() {
   const r = await fetch(`${BASE}/api/channels`)
   if (!r.ok) throw new Error(r.statusText)
-  return r.json()
-}
-
-export async function startChannel(id) {
-  const r = await fetch(`${BASE}/api/channels/${id}/start`, { method: 'POST' })
-  if (!r.ok) throw new Error(await r.text())
-  return r.json()
-}
-
-export async function stopChannel(id) {
-  const r = await fetch(`${BASE}/api/channels/${id}/stop`, { method: 'POST' })
-  if (!r.ok) throw new Error(await r.text())
-  return r.json()
-}
-
-export async function restartChannel(id) {
-  const r = await fetch(`${BASE}/api/channels/${id}/restart`, { method: 'POST' })
-  if (!r.ok) throw new Error(await r.text())
   return r.json()
 }
 
@@ -62,6 +43,7 @@ export async function updateChannel(id, body) {
   if (!r.ok) throw new Error(await r.text())
   return r.json()
 }
+
 
 export function getM3uUrl(channelId) {
   return `${BASE}/api/channels/${channelId}/m3u`
@@ -87,8 +69,18 @@ export function getErsatzTvYmlUrl(channelId) {
   return `${BASE}/api/channels/${channelId}/ersatztv-yml`
 }
 
+/** Ensure channel is running (start FFmpeg if needed). Call before loading HLS so backend is hit. */
+export async function ensureStream(channelId) {
+  const r = await fetch(`${BASE}/api/stream/ensure/${encodeURIComponent(channelId)}`)
+  if (!r.ok) throw new Error(r.statusText)
+  return r.json()
+}
+
+/** Stream URL: use current origin so the request always hits this app. */
 export function getStreamUrl(channelId) {
-  return `${BASE}/stream/${channelId}/index.m3u8`
+  const origin = typeof window !== 'undefined' ? window.location.origin : ''
+  const base = origin || BASE
+  return `${base}/stream/${channelId}/index.m3u8`
 }
 
 export function getChannelLogoUrl(channelId) {
@@ -160,6 +152,12 @@ export async function getAppLogContent(tail = 500) {
 
 export async function clearAppLog() {
   const r = await fetch(`${BASE}/api/logs/app`, { method: 'DELETE' })
+  if (!r.ok) throw new Error(r.statusText)
+  return r.json()
+}
+
+export async function getVersion() {
+  const r = await fetch(`${BASE}/api/system/version`)
   if (!r.ok) throw new Error(r.statusText)
   return r.json()
 }
