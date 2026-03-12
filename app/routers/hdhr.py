@@ -145,15 +145,6 @@ async def stream_channel_ts(channel_id: str, request: Request):
     if getattr(state, "service_started", False):
         await services.start_channel(channel_id)
 
-    hls_file = settings.data_dir / "streams" / channel_id / "index.m3u8"
-    if not hls_file.is_file():
-        for _ in range(20):
-            await asyncio.sleep(1)
-            if hls_file.is_file():
-                break
-    if not hls_file.is_file():
-        raise HTTPException(503, "Channel not ready — try again shortly")
-
     hls_url = f"http://127.0.0.1:{settings.port}/stream/{channel_id}/index.m3u8"
     log_path = settings.data_dir / "logs" / f"ffmpeg_hdhr_{channel_id}.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -172,10 +163,7 @@ async def stream_channel_ts(channel_id: str, request: Request):
             "-reconnect_at_eof", "1",
             "-reconnect_streamed", "1",
             "-reconnect_delay_max", "5",
-            "-probesize", "32",
-            "-analyzeduration", "0",
-            "-fflags", "nobuffer",
-            "-flags", "low_delay",
+            "-reconnect_on_http_error", "404,503",
             "-i", hls_url,
             "-c", "copy",
             "-f", "mpegts",
