@@ -711,6 +711,7 @@ async def _start_single_channel(channel: Channel, state: AdminState, index: int)
         "-hls_time", str(hls_time_sec),
         "-hls_list_size", str(hls_list_size_val),
         "-hls_flags", "delete_segments+program_date_time+omit_endlist+independent_segments",
+        "-hls_delete_threshold", "3",
         "-hls_allow_cache", "0",
         "-hls_segment_filename", seg_filename,
         str(output_path),

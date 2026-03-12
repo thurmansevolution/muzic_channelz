@@ -26,7 +26,7 @@ class FFmpegSettings(BaseModel):
     ffmpeg_path: str = ""
     ffprobe_path: str = ""
     hls_time: int = 2
-    hls_list_size: int = 4
+    hls_list_size: int = 10
     hls_segmenter_idle_timeout_seconds: int = 0
     # Seconds to keep channel FFmpeg running after last stream request (0 = never auto-stop).
     channel_idle_shutdown_seconds: int = 300

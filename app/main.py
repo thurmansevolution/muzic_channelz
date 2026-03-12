@@ -1,23 +1,121 @@
 """muzic channelz - FastAPI application."""
 from contextlib import asynccontextmanager
 from pathlib import Path
+import time as _time
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.routers import admin, channels, backgrounds, logs, system, hdhr
+from app.routers import admin, channels, backgrounds, logs, system, hdhr, stream
+
+_last_hls_request: dict[str, float] = {}
+
+
+def _clear_logs_on_startup() -> None:
+    """Delete all log files so each container start has a clean log slate."""
+    if not settings.logs_dir or not settings.logs_dir.exists():
+        return
+    for f in settings.logs_dir.iterdir():
+        if f.is_file() and f.suffix in (".log", ".txt"):
+            try:
+                f.unlink()
+            except OSError:
+                pass
+
+
+def _clear_stale_hls_segments() -> None:
+    """Delete all HLS segments and playlists left over from a previous run."""
+    streams_root = settings.data_dir / "streams"
+    if not streams_root.exists():
+        return
+    for channel_dir in streams_root.iterdir():
+        if not channel_dir.is_dir():
+            continue
+        for f in channel_dir.iterdir():
+            if f.is_file() and f.suffix in (".m3u8", ".ts"):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+
+
+async def _idle_channel_checker() -> None:
+    """Periodically stop channels that have been idle longer than channel_idle_shutdown_seconds."""
+    import asyncio as _asyncio
+    from app import services
+    from app.store import load_admin_state
+    from app.ffmpeg_runner import append_app_log
+    from app.models import FFmpegSettings
+
+    while True:
+        await _asyncio.sleep(15)
+        try:
+            state = await load_admin_state()
+            if not getattr(state, "service_started", False):
+                continue
+            fs = state.ffmpeg_settings or FFmpegSettings()
+            idle_secs = getattr(fs, "channel_idle_shutdown_seconds", 300)
+            if idle_secs <= 0:
+                continue
+            now = _time.time()
+            for ch_id in list(services._running.keys()):
+                last_request = _last_hls_request.get(ch_id, 0)
+                channel_started = services._channel_started_at.get(ch_id, 0)
+                last = max(last_request, channel_started)
+                idle_secs_elapsed = int(now - last) if last > 0 else -1
+                if last > 0 and (now - last) > idle_secs:
+                    append_app_log(f"channel {ch_id} idle for >{idle_secs}s — auto-stopping", "warn")
+                    await services.stop_channel(ch_id)
+                    _last_hls_request.pop(ch_id, None)
+                elif last > 0:
+                    append_app_log(f"idle check: channel {ch_id} active ({idle_secs_elapsed}s since last activity, threshold {idle_secs}s)", "debug")
+        except Exception:
+            pass
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    import asyncio as _asyncio
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     if settings.backgrounds_dir:
         settings.backgrounds_dir.mkdir(parents=True, exist_ok=True)
     if settings.logs_dir:
         settings.logs_dir.mkdir(parents=True, exist_ok=True)
+
+    _clear_logs_on_startup()
+    _clear_stale_hls_segments()
+
+    from app.store import load_admin_state, save_admin_state
+    from app.models import FFmpegSettings
+    state = await load_admin_state()
+    _dirty = False
+    if state.service_started:
+        state.service_started = False
+        _dirty = True
+    if state.ffmpeg_settings and getattr(state.ffmpeg_settings, "channel_idle_shutdown_seconds", 0) <= 60:
+        state.ffmpeg_settings.channel_idle_shutdown_seconds = 300
+        _dirty = True
+    elif not state.ffmpeg_settings:
+        state.ffmpeg_settings = FFmpegSettings()
+        _dirty = True
+    if _dirty:
+        await save_admin_state(state)
+
+    from app.ffmpeg_runner import append_app_log
+    append_app_log("muzic channelz started — server is stopped. Use Administration to start the service.", "info")
+
+    idle_task = _asyncio.create_task(_idle_channel_checker())
+
     yield
+
+    idle_task.cancel()
+    try:
+        await idle_task
+    except _asyncio.CancelledError:
+        pass
+
     from app import services
     await services.stop_all_channels()
 
@@ -40,6 +138,7 @@ app.include_router(channels.router)
 app.include_router(backgrounds.router)
 app.include_router(logs.router)
 app.include_router(system.router)
+app.include_router(stream.router)
 # HDHomeRun / Live TV: root paths so they are not caught by SPA
 app.get("/discover.json", include_in_schema=False)(hdhr.discover_json)
 app.get("/device.json", include_in_schema=False)(hdhr.device_json)
@@ -62,14 +161,69 @@ _HLS_MEDIA_TYPES = {
     ".ts": "video/MP2T",
 }
 
+_channel_starting: set[str] = set()
+
+
+async def _start_channel_task(channel_id: str) -> None:
+    from app import services
+    try:
+        await services.start_channel(channel_id)
+    finally:
+        _channel_starting.discard(channel_id)
+
+
 @app.get("/stream/{path:path}")
 async def serve_stream(path: str):
-    """Serve HLS playlist and segments with correct MIME types."""
+    """Serve HLS playlist and segments. Auto-starts the channel on first request if not running."""
     from fastapi.responses import FileResponse
     from fastapi import HTTPException
+    from app import services
+    import asyncio as _asyncio
+
+    parts = path.split("/")
+    channel_id = parts[0] if parts else None
+
+    if channel_id:
+        _last_hls_request[channel_id] = _time.time()
+
+    from app.ffmpeg_runner import append_app_log
+    _is_playlist = path.endswith("index.m3u8")
+
+    if channel_id and not services.is_running(channel_id) and channel_id not in _channel_starting:
+        from app.store import load_admin_state
+        state = await load_admin_state()
+        if state.service_started:
+            ch = next((c for c in state.channels if c.id == channel_id), None)
+        else:
+            ch = None
+        if ch and ch.enabled:
+            _channel_starting.add(channel_id)
+            append_app_log(f"channel {channel_id}: on-demand start triggered by stream request", "info")
+            _asyncio.create_task(_start_channel_task(channel_id))
+        elif not getattr(state, "service_started", False) and _is_playlist:
+            append_app_log(f"serve_stream: channel {channel_id} playlist requested but service is stopped", "debug")
+    elif channel_id and services.is_running(channel_id) and _is_playlist:
+        append_app_log(f"serve_stream: channel {channel_id} HLS playlist request — already running", "debug")
+
+    stream_file = _streams_dir / path
+    if channel_id in _channel_starting or (channel_id and not stream_file.is_file() and services.is_running(channel_id)):
+        if _is_playlist:
+            append_app_log(f"serve_stream: waiting for channel {channel_id} to initialize (channel_starting={channel_id in _channel_starting})", "debug")
+        waited = 0
+        for _ in range(20):
+            await _asyncio.sleep(1)
+            waited += 1
+            stream_file = _streams_dir / path
+            if stream_file.is_file() and channel_id not in _channel_starting:
+                break
+        if _is_playlist:
+            append_app_log(f"serve_stream: channel {channel_id} wait complete after {waited}s — file_exists={stream_file.is_file()}", "debug")
+
     stream_file = _streams_dir / path
     if not stream_file.is_file() or not stream_file.resolve().is_relative_to(_streams_dir.resolve()):
-        raise HTTPException(404, "Stream file not found. Start the service and ensure the channel is running.")
+        if _is_playlist:
+            append_app_log(f"serve_stream: 404 for channel {channel_id} — file not found after wait", "debug")
+        raise HTTPException(404, "Stream file not found. The channel may still be starting — try again in a moment.")
     media_type = _HLS_MEDIA_TYPES.get(stream_file.suffix.lower())
     return FileResponse(
         stream_file,
