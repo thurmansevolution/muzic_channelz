@@ -127,6 +127,27 @@ async def list_channels() -> list[dict]:
     return out
 
 
+@router.post("/{channel_id}/stop")
+async def stop_channel_endpoint(channel_id: str, grace: bool = False) -> dict:
+    """Force stop a channel's FFmpeg process. grace=true means navigation-away stop (no user-stopped flag)."""
+    from app.ffmpeg_runner import append_app_log
+    if grace:
+        append_app_log(f"channel {channel_id} grace stop (navigation away)", "debug")
+    else:
+        append_app_log(f"channel {channel_id} stop requested by user", "info")
+    await services.stop_channel_api(channel_id, grace=grace)
+    return {"ok": True, "channel_id": channel_id}
+
+
+@router.post("/{channel_id}/restart")
+async def restart_channel_endpoint(channel_id: str) -> dict:
+    """Restart a channel's FFmpeg process (stop + start)."""
+    from app.ffmpeg_runner import append_app_log
+    append_app_log(f"channel {channel_id} restart requested by user", "info")
+    result = await services.restart_channel(channel_id)
+    return {"ok": result == "ok", "channel_id": channel_id, "result": result}
+
+
 @router.get("/playlist.m3u")
 async def get_playlist_m3u():
     """Return a single M3U with all enabled channels for use in IPTV clients."""
@@ -137,7 +158,8 @@ async def get_playlist_m3u():
     for i, c in enumerate(channels):
         ch_num = _guide_number(c, i)
         name = (c.name or _station_name_for_channel(state, c) or c.slug or c.id or "Channel").replace(",", " ")
-        out_lines.append(f'#EXTINF:-1 tvg-chno="{ch_num}" tvg-name="{name}" group-title="muzic channelz",{name}')
+        logo_url = f"{base}/api/channels/logo/{c.id}"
+        out_lines.append(f'#EXTINF:-1 tvg-chno="{ch_num}" tvg-name="{name}" tvg-logo="{logo_url}" group-title="muzic channelz",{name}')
         out_lines.append(f"{base}/stream/{c.id}/index.m3u8")
     body = "\n".join(out_lines) + "\n"
     return Response(
@@ -185,9 +207,8 @@ async def get_guide_xml(request: Request):
         parts.append(f"    <display-name>{ch_num} {name}</display-name>")
         parts.append(f"    <display-name>{ch_num}</display-name>")
         parts.append(f"    <display-name>{name}</display-name>")
-        # Use URL (same origin as guide) so Plex can fetch icons; data URI is not reliably supported.
         icon_src = f"{base}/api/channels/logo/{c.id}.png"
-        parts.append(f'    <icon src="{icon_src}" width="120" height="120"/>')
+        parts.append(f'    <icon src="{icon_src}"/>')
         parts.append("  </channel>")
     for i, c in enumerate(channels):
         ch_num = _guide_number(c, i)
@@ -206,15 +227,34 @@ async def get_guide_xml(request: Request):
     )
 
 
-@router.get("/logo/{channel_id}")
-async def get_channel_logo(channel_id: str):
-    """Serve channel logo (e.g. for M3U clients). The XMLTV guide embeds logos as inline base64 so Plex displays them without HTTP/HTTPS or CORS issues. Accepts .../logo/id or .../logo/id.png."""
+@router.api_route("/logo/{channel_id}", methods=["GET", "HEAD"])
+async def get_channel_logo(channel_id: str, request: Request):
+    """Serve channel logo. Accepts GET and HEAD (HEAD used by Plex to check logo availability).
+    Accepts .../logo/id or .../logo/id.png."""
     if channel_id.endswith(".png"):
         channel_id = channel_id[:-4]
     state = await load_admin_state()
     if not next((c for c in (state.channels or []) if c.id == channel_id), None):
         raise HTTPException(404, "Channel not found")
     logos_dir = _channel_logos_dir()
+    custom = logos_dir / f"{channel_id}.png"
+    has_logo = custom.is_file()
+    if not has_logo:
+        stock = _stock_logo_path()
+        has_logo = stock is not None
+    if not has_logo:
+        raise HTTPException(404, "No logo available")
+    if request.method == "HEAD":
+        from fastapi.responses import Response as _Response
+        logo_path = logos_dir / f"{channel_id}.png"
+        if not logo_path.is_file():
+            logo_path = _stock_logo_path()
+        file_size = logo_path.stat().st_size if logo_path and logo_path.is_file() else 0
+        return _Response(
+            status_code=200,
+            media_type="image/png",
+            headers={"Content-Length": str(file_size), "Cache-Control": "public, max-age=3600"},
+        )
     custom = logos_dir / f"{channel_id}.png"
     if custom.is_file():
         return FileResponse(custom, media_type="image/png")
@@ -295,31 +335,7 @@ duration: "24:00:00"
     )
 
 
-@router.post("/{channel_id}/start")
-async def start_channel(channel_id: str) -> dict:
-    """Start a single channel."""
-    result = await services.start_channel(channel_id)
-    if result.startswith("error"):
-        raise HTTPException(400, result)
-    return {"status": "ok"}
 
-
-@router.post("/{channel_id}/stop")
-async def stop_channel(channel_id: str) -> dict:
-    """Stop a single channel."""
-    result = await services.stop_channel_api(channel_id)
-    if result.startswith("error"):
-        raise HTTPException(400, result)
-    return {"status": "ok"}
-
-
-@router.post("/{channel_id}/restart")
-async def restart_channel(channel_id: str) -> dict:
-    """Restart FFmpeg for a single channel."""
-    result = await services.restart_channel(channel_id)
-    if result.startswith("error"):
-        raise HTTPException(400, result)
-    return {"status": "ok"}
 
 
 @router.patch("/{channel_id}")

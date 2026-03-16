@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { getChannels, updateChannel } from '../api'
+import { getChannels, updateChannel, stopChannel } from '../api'
 
 export default function Channelz() {
   const navigate = useNavigate()
@@ -30,6 +30,17 @@ export default function Channelz() {
     const interval = setInterval(load, 5000)
     return () => clearInterval(interval)
   }, [])
+
+  const sortedChannels = useMemo(() => {
+    return [...channels].sort((a, b) => {
+      const an = a.guide_number ?? null
+      const bn = b.guide_number ?? null
+      if (an === null && bn === null) return 0
+      if (an === null) return 1
+      if (bn === null) return -1
+      return an - bn
+    })
+  }, [channels])
 
   const setGuideNumber = (channelId, value) => {
     setGuideNumbers((prev) => ({ ...prev, [channelId]: value }))
@@ -77,6 +88,16 @@ export default function Channelz() {
     }
   }
 
+  const handleStop = async (e, channelId) => {
+    e.stopPropagation()
+    try {
+      await stopChannel(channelId)
+      const list = await getChannels()
+      setChannels(list)
+    } catch {
+    }
+  }
+
   return (
     <div className="p-6">
       <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
@@ -104,11 +125,11 @@ export default function Channelz() {
       ) : channels.length === 0 ? (
         <div className="rounded-xl border border-surface-500 bg-surface-700/50 p-8 text-center text-slate-400">
           <p className="mb-2">No channels yet.</p>
-          <p className="text-sm">Add and configure channels in <strong>Administration</strong>, then start the service.</p>
+          <p className="text-sm">Add and configure channels in <strong>Administration</strong>. Channels start automatically when a player requests them.</p>
         </div>
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-6">
-          {channels.map((ch, index) => {
+          {sortedChannels.map((ch, index) => {
             const offlineOrDisabled = !ch.enabled || !ch.is_running
             const value = guideNumbers[ch.id] !== undefined ? guideNumbers[ch.id] : (ch.guide_number ?? '')
             return (
@@ -119,16 +140,16 @@ export default function Channelz() {
                 className="group flex flex-col items-center focus:outline-none focus:ring-2 focus:ring-accent-500 rounded-xl overflow-hidden w-full"
               >
                 <div className={`relative w-full aspect-video max-w-[240px] rounded-lg bg-surface-600 border-2 transition-colors overflow-hidden shadow-lg ${offlineOrDisabled ? 'border-red-500 ring-2 ring-red-500/50' : 'border-surface-500 group-hover:border-accent-500'}`}>
-                  <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-b from-surface-600 to-surface-700">
+                  <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-b from-surface-600 to-surface-700 pb-8">
                     <span className="text-5xl opacity-80">📺</span>
                   </div>
                   <div className="absolute bottom-0 left-0 right-0 bg-black/60 py-2 px-3 text-center">
                     <span className="text-sm font-medium text-white truncate block">{ch.name || ch.station_name || ch.slug || ch.id}</span>
                   </div>
                 </div>
-                <span className="mt-2 text-xs text-slate-400 group-hover:text-slate-300">{offlineOrDisabled ? 'Offline or disabled' : 'View channel'}</span>
+                <span className="mt-2 text-xs text-slate-400 group-hover:text-slate-300">{offlineOrDisabled ? 'FFmpeg Service Not Active' : 'View channel'}</span>
               </button>
-              <div className="mt-2 flex items-center gap-2 w-full max-w-[240px]" onClick={(e) => e.stopPropagation()}>
+              <div className="mt-2 flex items-center justify-center gap-2 w-full max-w-[240px]" onClick={(e) => e.stopPropagation()}>
                 <span className="text-sm text-slate-400">Guide #</span>
                 <input
                   type="number"
@@ -139,6 +160,19 @@ export default function Channelz() {
                   onChange={(e) => setGuideNumber(ch.id, e.target.value)}
                   className="w-20 px-2 py-1.5 rounded bg-surface-600 border border-surface-500 text-slate-300 text-base"
                 />
+                {ch.is_running && (
+                  <button
+                    type="button"
+                    title="Stop channel"
+                    onClick={(e) => handleStop(e, ch.id)}
+                    className="flex items-center justify-center w-7 h-7 rounded bg-red-600 hover:bg-red-500 text-white flex-shrink-0"
+                    aria-label="Stop channel"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                      <rect x="5" y="5" width="14" height="14" />
+                    </svg>
+                  </button>
+                )}
               </div>
             </div>
           )})}

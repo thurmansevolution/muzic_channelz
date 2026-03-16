@@ -47,7 +47,21 @@ export default function LiveLogs() {
   const handleCopyToClipboard = async () => {
     if (!log) return
     try {
-      await navigator.clipboard.writeText(log)
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(log)
+      } else {
+        const ta = document.createElement('textarea')
+        ta.value = log
+        ta.style.position = 'fixed'
+        ta.style.top = '-9999px'
+        ta.style.left = '-9999px'
+        document.body.appendChild(ta)
+        ta.focus()
+        ta.select()
+        const ok = document.execCommand('copy')
+        document.body.removeChild(ta)
+        if (!ok) throw new Error('execCommand copy failed')
+      }
       alert('Log copied to clipboard!')
     } catch (err) {
       console.error('Failed to copy:', err)

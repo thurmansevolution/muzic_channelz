@@ -1,4 +1,7 @@
 """Application configuration."""
+
+# Bump this when you deploy; /api/system/version and app log show it so you know which image is running.
+BUILD_ID = "stream-fix-v8"
 from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 

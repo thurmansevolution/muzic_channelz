@@ -2,12 +2,99 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
 from app.config import settings
 from app.models import Channel, FFmpegProfile
+
+_LOG_LEVEL_ORDER = {"debug": 0, "info": 1, "warn": 2, "error": 3}
+
+_FRAME_STAT_RE = re.compile(r"^frame=\s*\d+")
+_HLS_OPEN_RE = re.compile(r"^\[hls\s*@\s*0x[0-9a-f]+\]", re.IGNORECASE)
+_CODEC_ADDR_RE = re.compile(r"^\[[a-z0-9_]+\s*@\s*0x[0-9a-f]+\]", re.IGNORECASE)
+_FFMPEG_BOILERPLATE_RE = re.compile(
+    r"^(?:ffmpeg version|built with|  configuration:|  lib(?:av|sw|post)|"
+    r"Input #|Output #|Stream #|  Stream #|Stream mapping:|Press \[q\]|"
+    r"  Duration:|  Metadata:|    (?:encoder|icy-|StreamTitle|icy_|bitrate|start:))",
+    re.IGNORECASE,
+)
+_APP_LEVEL_RE = re.compile(r"^\[[^\]]+\] \[(DEBUG|INFO|WARN|ERROR)\] ", re.IGNORECASE)
+
+
+def classify_channel_log_line(line: str) -> str:
+    """Return 'debug', 'info', 'warn', or 'error' for a channel/FFmpeg log line."""
+    s = line.rstrip()
+    if not s:
+        return "debug"
+    lower = s.lower()
+
+    if _FRAME_STAT_RE.match(s):
+        return "debug"
+    if _HLS_OPEN_RE.match(s):
+        return "debug"
+    if _FFMPEG_BOILERPLATE_RE.match(s):
+        return "debug"
+    if _CODEC_ADDR_RE.match(s):
+        if "error" in lower or "failed" in lower or "invalid" in lower:
+            return "error"
+        if "warning" in lower:
+            return "warn"
+        if "qavg:" in lower or "lsize=" in lower:
+            return "info"
+        return "debug"
+
+    if s.startswith("[metadata]"):
+        if "art download failed" in lower or ("error" in lower and "cache" not in lower):
+            return "warn"
+        if "cache hit" in lower or "(from cache)" in lower or "art: using default" in lower:
+            return "debug"
+        if "art at startup:" in lower:
+            return "info"
+        return "info"
+
+    if lower.startswith("exiting normally") or lower.startswith("video:") or lower.startswith("audio:"):
+        return "info"
+
+    if "error" in lower or "failed" in lower or "invalid" in lower or "no such file" in lower:
+        return "error"
+    if "warning" in lower:
+        return "warn"
+
+    return "debug"
+
+
+def classify_app_log_line(line: str) -> str:
+    """Return 'debug', 'info', 'warn', or 'error' for an application log line.
+
+    Lines written by append_app_log() contain a [LEVEL] tag after the timestamp and are
+    parsed directly. Legacy lines (no tag) fall back to content-based heuristics.
+    """
+    s = line.strip()
+    if not s:
+        return "debug"
+    m = _APP_LEVEL_RE.match(s)
+    if m:
+        return m.group(1).lower()
+    lower = s.lower()
+    if "ffmpeg exited unexpectedly" in lower or "auto-restarting" in lower or "may be due to gpu" in lower or "idle for >" in lower:
+        return "warn"
+    if "auto-restart failed" in lower or "start failed" in lower or "watch task error" in lower:
+        return "error"
+    if "stream ensure" in lower:
+        return "debug"
+    return "info"
+
+
+def filter_log_lines(lines: list[str], level: str, is_app_log: bool = False) -> list[str]:
+    """Return only lines at or above the given log level."""
+    min_level = _LOG_LEVEL_ORDER.get((level or "debug").lower(), 0)
+    if min_level == 0:
+        return lines
+    classify = classify_app_log_line if is_app_log else classify_channel_log_line
+    return [ln for ln in lines if _LOG_LEVEL_ORDER.get(classify(ln), 0) >= min_level]
 
 APP_LOG_FILENAME = "app.log"
 MAX_CHANNEL_LOG_BYTES = 2 * 1024 * 1024
@@ -25,15 +112,17 @@ def get_app_log_path() -> Path:
     return settings.logs_dir / APP_LOG_FILENAME
 
 
-def append_app_log(message: str) -> None:
-    """Append a timestamped line to the application log (channel start/stop, errors, etc.)."""
+def append_app_log(message: str, level: str = "info") -> None:
+    """Append a timestamped, level-tagged line to the application log."""
     if not settings.logs_dir:
         return
     path = get_app_log_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        path.open("a", encoding="utf-8").write(f"[{ts}] {message.strip()}\n")
+        tag = (level or "info").upper()
+        with path.open("a", encoding="utf-8") as f:
+            f.write(f"[{ts}] [{tag}] {message.strip()}\n")
     except OSError:
         pass
 
@@ -133,6 +222,7 @@ def append_metadata_log(channel_id: str, message: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         _trim_channel_log_if_needed(path)
-        path.open("a", encoding="utf-8").write(f"[metadata] {message.strip()}\n")
+        with path.open("a", encoding="utf-8") as f:
+            f.write(f"[metadata] {message.strip()}\n")
     except OSError:
         pass

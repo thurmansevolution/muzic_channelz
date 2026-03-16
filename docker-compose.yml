@@ -10,6 +10,9 @@ services:
       #- MUZIC_PUBLIC_HOST=
       # Set to 0 to use hardware encoding. For NVIDIA set deploy below; for Intel/AMD use devices instead.
       - MUZIC_FFMPEG_FORCE_SOFTWARE=1
+      # VAAPI driver name: i965 for older Intel (Gen4-Gen9), iHD for newer (Gen8+).
+      # Default in the image is i965. Uncomment to override:
+      # - LIBVA_DRIVER_NAME=iHD
     # NVIDIA (NVENC) - requires NVIDIA Container Toolkit installed on the host:
 #    deploy:
 #      resources:
@@ -21,6 +24,9 @@ services:
     # Intel/AMD (VAAPI) - use this instead of deploy above, and set MUZIC_FFMPEG_FORCE_SOFTWARE=0:
     # devices:
     #   - /dev/dri:/dev/dri
+    # group_add so the container can open /dev/dri/renderD128 (host render group, often 107):
+    # group_add:
+    #   - "107"
     volumes:
       - muzic-data:/app/data
     restart: unless-stopped

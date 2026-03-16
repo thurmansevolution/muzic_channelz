@@ -7,8 +7,18 @@ import socket
 from fastapi import APIRouter
 
 from app.config import settings
+from app.config import BUILD_ID
+from app.ffmpeg_runner import get_app_log_path
 
 router = APIRouter(prefix="/api/system", tags=["system"])
+
+
+@router.get("/version")
+async def get_version() -> dict:
+    """Return build id and paths so you can confirm which image is running and where logs go."""
+    logs_dir = str(get_app_log_path().parent)
+    data_dir = str(settings.data_dir)
+    return {"build": BUILD_ID, "logs_dir": logs_dir, "data_dir": data_dir}
 
 
 def _local_ip() -> str:

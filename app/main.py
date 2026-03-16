@@ -10,8 +10,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.routers import admin, channels, backgrounds, logs, system, hdhr, stream
 
-_last_hls_request: dict[str, float] = {}
-
 
 def _clear_logs_on_startup() -> None:
     """Delete all log files so each container start has a clean log slate."""
@@ -60,17 +58,16 @@ async def _idle_channel_checker() -> None:
             if idle_secs <= 0:
                 continue
             now = _time.time()
-            for ch_id in list(services._running.keys()):
-                last_request = _last_hls_request.get(ch_id, 0)
-                channel_started = services._channel_started_at.get(ch_id, 0)
-                last = max(last_request, channel_started)
-                idle_secs_elapsed = int(now - last) if last > 0 else -1
+            for ch_id, session in list(services.get_sessions().items()):
+                if not session.is_running:
+                    continue
+                last = session.last_activity
+                idle_elapsed = int(now - last) if last > 0 else -1
                 if last > 0 and (now - last) > idle_secs:
                     append_app_log(f"channel {ch_id} idle for >{idle_secs}s — auto-stopping", "warn")
                     await services.stop_channel(ch_id)
-                    _last_hls_request.pop(ch_id, None)
                 elif last > 0:
-                    append_app_log(f"idle check: channel {ch_id} active ({idle_secs_elapsed}s since last activity, threshold {idle_secs}s)", "debug")
+                    append_app_log(f"idle check: channel {ch_id} active ({idle_elapsed}s since last activity, threshold {idle_secs}s)", "debug")
         except Exception:
             pass
 
@@ -184,7 +181,7 @@ async def serve_stream(path: str):
     channel_id = parts[0] if parts else None
 
     if channel_id:
-        _last_hls_request[channel_id] = _time.time()
+        services.notify_stream_request(channel_id)
 
     from app.ffmpeg_runner import append_app_log
     _is_playlist = path.endswith("index.m3u8")

@@ -15,15 +15,16 @@ from app.ffmpeg_runner import get_channel_log_path
 from app.models import AdminState, BackgroundTemplate
 from app.store import load_admin_state, save_admin_state, load_backgrounds, save_backgrounds
 from app import services
+from app.version import APP_VERSION, FRONTEND_VERSION
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 
 @router.get("/state", response_model=AdminState)
 async def get_state() -> AdminState:
-    """Return admin state with service_started and channel running state reflecting actual process state."""
+    """Return admin state. service_started = server is listening (channels start on-demand)."""
     state = await load_admin_state()
-    state.service_started = any(services.is_running(c.id) for c in state.channels)
+    # service_started is persisted: True = listening for stream requests, channels start on-demand
     # Return updated HLS defaults for older saved configs so UI shows current defaults
     if state.ffmpeg_settings and state.ffmpeg_settings.hls_time == 4 and state.ffmpeg_settings.hls_list_size == 6:
         state = state.model_copy(update={
@@ -77,11 +78,11 @@ async def put_state(state: AdminState) -> AdminState:
 
 @router.post("/start-service")
 async def start_service() -> dict:
-    """Start all music channels."""
-    import traceback
+    """Enable server to listen for stream requests. Channels start on-demand when Plex/Kodi/Jellyfin requests a stream."""
     from app.ffmpeg_runner import append_app_log
     log = logging.getLogger("app.routers.admin")
     try:
+        append_app_log(f"service start requested (backend_version={APP_VERSION})", "info")
         state = await load_admin_state()
         enabled = [c for c in state.channels if c.enabled]
         if not enabled:
@@ -90,26 +91,17 @@ async def start_service() -> dict:
                 "channels": {},
                 "message": "No enabled channels. Add a channel, assign a station and FFmpeg profile, enable it, Save, then Start service.",
             }
-        results = await services.start_all_channels()
-        state = await load_admin_state()
-        state.service_started = any(services.is_running(c.id) for c in state.channels)
+        state.service_started = True
         await save_admin_state(state)
-        started = sum(1 for v in results.values() if v == "ok")
-        failed = [cid for cid, v in results.items() if v != "ok"]
-        if started:
-            append_app_log(f"service started ({started} channel(s))")
-        if failed:
-            append_app_log(f"channel(s) failed to start: {', '.join(f'{c}: {results[c]}' for c in failed)}")
+        append_app_log("service started (listening for stream requests). Channels start on-demand when Plex/Kodi/Jellyfin requests a stream.", "info")
         return {
-            "ok": bool(started),
-            "channels": results,
-            "message": f"Started {started} of {len(enabled)} channel(s)." if started else (
-                "No channel could be started. Check Live logs for FFmpeg errors and that each channel has a station and FFmpeg profile."
-            ),
+            "ok": True,
+            "channels": {},
+            "message": "Server is listening. Channels will start on-demand when a stream is requested.",
         }
     except Exception as e:
         log.exception("start-service failed")
-        append_app_log(f"start-service error: {e!s}")
+        append_app_log(f"start-service error: {e!s}", "error")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -121,7 +113,7 @@ async def stop_service() -> dict:
     state = await load_admin_state()
     state.service_started = False
     await save_admin_state(state)
-    append_app_log("service stopped (all channels)")
+    append_app_log("service stopped (all channels)", "info")
     return {"ok": True}
 
 

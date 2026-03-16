@@ -61,8 +61,8 @@ def get_cached(artist: str) -> dict[str, Any] | None:
     if image_path and not image_path.exists():
         image_path = None
     result: dict[str, Any] = {"bio": bio, "image_path": image_path}
-    if "image_url" in entry and entry.get("image_url"):
-        result["image_url"] = entry["image_url"]
+    if "image_url" in entry:
+        result["image_url"] = entry.get("image_url") or ""
     return result
 
 

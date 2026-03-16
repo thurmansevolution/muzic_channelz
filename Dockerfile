@@ -15,13 +15,17 @@ LABEL org.opencontainers.image.title="muzic-channelz" \
       org.opencontainers.image.description="Music channel streaming with Azuracast, overlay, and ErsatzTV output"
 
 WORKDIR /app
-# Use BuildKit cache mount so downloaded .deb files are reused across builds (first build still downloads once)
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    apt-get update && apt-get install -y --no-install-recommends \
+# Install runtime dependencies. Avoid BuildKit-only --mount cache so this
+# Dockerfile works with both classic docker-compose and BuildKit builds.
+# Intel/AMD VAAPI: ffmpeg uses libva; we need the driver so libva can open /dev/dri/renderD*.
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libcairo2 \
     libgdk-pixbuf2.0-0 \
     shared-mime-info \
+    libva-drm2 \
+    intel-media-va-driver \
+    i965-va-driver \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
@@ -31,6 +35,9 @@ COPY app/ ./app/
 COPY frontend/public/logo.png ./app/static/default-art.png
 COPY --from=frontend /app/frontend/dist ./frontend/dist
 
+# Default to i965 VAAPI driver: supports H.264 encoding on the widest range of Intel GPUs.
+# Override via docker-compose env LIBVA_DRIVER_NAME=iHD for newer Intel (Gen9+) if needed.
+ENV LIBVA_DRIVER_NAME=i965
 ENV MUZIC_HOST=0.0.0.0
 ENV MUZIC_PORT=8484
 EXPOSE 8484

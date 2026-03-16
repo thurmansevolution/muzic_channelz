@@ -62,3 +62,11 @@ Data lives under `data/` (channels, backgrounds, logs).
 ## License
 
 This project is open source under the **MIT License**. You can use, modify, and distribute it freely. See [LICENSE](LICENSE) for the full text.
+
+---
+
+v2.0 Beta Update (15/3/26) -
+
+ - VAAPI hardware acceleratioin should now work (sorry that it didn't work in the last release)
+ - The backend was reworked a little...muzic channelz now "listens" for requests before starting a stream (which is torn down shortly after the user leaves a channel), instead of always streaming. Users may now add as many channelz as they wish, and the user is only limited to how many concurrent streams instead of how many total channelz.
+ - Minor UI and stability improvements.

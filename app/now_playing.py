@@ -94,16 +94,17 @@ def _parse_now_playing(data: dict) -> tuple[str, str, str]:
         return ("—", "—", "")
 
 
-def _ensure_placeholder_art(art_path: Path, size: int = 256) -> None:
-    """Write a simple placeholder image (gray with question mark) when no default art exists."""
+def _ensure_placeholder_art(art_path: Path, size: int = 512) -> None:
+    """Write a transparent placeholder image when no default art exists."""
     try:
         from PIL import Image, ImageDraw
         art_path.parent.mkdir(parents=True, exist_ok=True)
-        img = Image.new("RGB", (size, size), (0x2a, 0x2a, 0x2a))
+        img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
-        # Draw a simple "?" in the center
+        # Draw a subtle glyph without introducing an opaque background box.
         try:
-            draw.text((size // 2 - 20, size // 2 - 30), "?", fill=(0x88, 0x88, 0x88))
+            draw.ellipse((size // 6, size // 6, size * 5 // 6, size * 5 // 6), outline=(180, 180, 180, 180), width=6)
+            draw.text((size // 2 - 18, size // 2 - 32), "?", fill=(210, 210, 210, 200))
         except Exception:
             pass
         img.save(art_path, "PNG")
@@ -112,13 +113,94 @@ def _ensure_placeholder_art(art_path: Path, size: int = 256) -> None:
 
 
 def _default_art_path() -> Path | None:
-    """Path to the default icon/logo used when no artist image is found. Tries app/static first (Docker), then frontend/public."""
+    """Path to fallback art when no artist image exists. Prefer transparent web logo, then app static."""
     root = Path(__file__).resolve().parent.parent
-    for rel in ("app/static/default-art.png", "frontend/public/logo.png"):
+    for rel in ("frontend/public/logo.png", "app/static/default-art.png"):
         p = root / rel.replace("/", os.sep)
         if p.exists():
             return p
     return None
+
+
+def _write_png_atomic(src_image, dst: Path) -> bool:
+    """Write image as PNG atomically to avoid partial reads by FFmpeg.
+
+    Always saves at a fixed 512x512 size so FFmpeg's filter graph never
+    sees a dimension change (which would trigger a reinit that breaks VAAPI).
+    """
+    _ART_SIZE = 512
+    try:
+        from PIL import Image
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(src_image, Image.Image):
+            img = src_image
+        else:
+            img = Image.open(src_image)
+        if img.mode != "RGBA":
+            img = img.convert("RGBA")
+        if img.size != (_ART_SIZE, _ART_SIZE):
+            img = img.resize((_ART_SIZE, _ART_SIZE), Image.LANCZOS)
+        tmp = dst.with_name(dst.name + ".tmp")
+        img.save(tmp, "PNG")
+        os.replace(tmp, dst)
+        return True
+    except Exception:
+        return False
+
+
+def _corner_is_near_black(rgba: tuple[int, int, int, int]) -> bool:
+    r, g, b, a = rgba
+    return a >= 250 and r <= 20 and g <= 20 and b <= 20
+
+
+def _strip_black_background(img):
+    """If image appears fully opaque on black canvas, key black to transparent."""
+    try:
+        w, h = img.size
+        corners = [
+            img.getpixel((0, 0)),
+            img.getpixel((w - 1, 0)),
+            img.getpixel((0, h - 1)),
+            img.getpixel((w - 1, h - 1)),
+        ]
+        if not all(_corner_is_near_black(px) for px in corners):
+            return img
+        px = img.load()
+        for y in range(h):
+            for x in range(w):
+                r, g, b, a = px[x, y]
+                if a >= 240 and r <= 18 and g <= 18 and b <= 18:
+                    px[x, y] = (0, 0, 0, 0)
+        return img
+    except Exception:
+        return img
+
+
+def _write_fallback_logo_atomic(src_image, dst: Path) -> bool:
+    """Write fallback logo and aggressively remove accidental opaque black canvas.
+
+    Always saves at a fixed 512x512 size (same as _write_png_atomic) to prevent
+    FFmpeg filter graph reinit due to dimension changes.
+    """
+    _ART_SIZE = 512
+    try:
+        from PIL import Image
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(src_image, Image.Image):
+            img = src_image
+        else:
+            img = Image.open(src_image)
+        if img.mode != "RGBA":
+            img = img.convert("RGBA")
+        img = _strip_black_background(img)
+        if img.size != (_ART_SIZE, _ART_SIZE):
+            img = img.resize((_ART_SIZE, _ART_SIZE), Image.LANCZOS)
+        tmp = dst.with_name(dst.name + ".tmp")
+        img.save(tmp, "PNG")
+        os.replace(tmp, dst)
+        return True
+    except Exception:
+        return False
 
 
 def _fallback_art_path(channel: Channel) -> tuple[Path | None, str]:
@@ -136,6 +218,7 @@ async def write_now_playing_files(
     stream_dir: Path,
     channel: Channel,
     state: AdminState,
+    update_art: bool = True,
 ) -> tuple[str, str]:
     """Fetch now playing and metadata (bio + art), then write all overlay files together so they update in sync."""
     station = _station_for_channel(channel, state)
@@ -146,8 +229,8 @@ async def write_now_playing_files(
         stream_dir.joinpath("bio.txt").write_text("—", encoding="utf-8")
         fallback_path, _ = _fallback_art_path(channel)
         if fallback_path:
-            import shutil
-            shutil.copy2(fallback_path, stream_dir / "art.png")
+            if not _write_fallback_logo_atomic(fallback_path, stream_dir / "art.png"):
+                _ensure_placeholder_art(stream_dir / "art.png")
         else:
             _ensure_placeholder_art(stream_dir / "art.png")
         return ("—", "—")
@@ -171,6 +254,20 @@ async def write_now_playing_files(
             _log(f"metadata error: {e}")
 
     art_path = stream_dir / "art.png"
+    if not update_art:
+        if not art_path.exists() or art_path.stat().st_size == 0:
+            fallback_path, _ = _fallback_art_path(channel)
+            if fallback_path:
+                if not _write_fallback_logo_atomic(fallback_path, art_path):
+                    _ensure_placeholder_art(art_path)
+            else:
+                _ensure_placeholder_art(art_path)
+        await asyncio.sleep(1.0)
+        stream_dir.joinpath("song.txt").write_text(_wrap_text(title, 56), encoding="utf-8")
+        stream_dir.joinpath("artist.txt").write_text(artist, encoding="utf-8")
+        stream_dir.joinpath("bio.txt").write_text(_wrap_text(bio, 48, max_lines=9), encoding="utf-8")
+        return (title, artist)
+
     art_url = ""
     if artist and artist != "—":
         try:
@@ -187,8 +284,7 @@ async def write_now_playing_files(
             if art_url.startswith("file://"):
                 src = Path(art_url.removeprefix("file://"))
                 if src.exists():
-                    import shutil
-                    shutil.copy2(src, art_path)
+                    _write_png_atomic(src, art_path)
                     _log("wrote art.png OK (from cache)")
                     art_resolved = True
                 else:
@@ -200,25 +296,30 @@ async def write_now_playing_files(
                         from PIL import Image
                         import io
                         img = Image.open(io.BytesIO(r.content))
-                        if img.mode not in ("RGB", "RGBA"):
-                            img = img.convert("RGB")
-                        tmp = art_path.with_name(art_path.name + ".tmp")
-                        img.save(tmp, "PNG")
-                        os.replace(tmp, art_path)
-                        _log("wrote art.png OK")
-                        from app.metadata_cache import save_cached_image
-                        if not save_cached_image(artist, art_path):
-                            _log("cache save_cached_image failed")
-                        art_resolved = True
+                        if _write_png_atomic(img, art_path):
+                            _log("wrote art.png OK")
+                            from app.metadata_cache import save_cached_image
+                            if not save_cached_image(artist, art_path):
+                                _log("cache save_cached_image failed")
+                            art_resolved = True
+                        else:
+                            _log("art write failed")
                     else:
                         _log(f"art download failed: HTTP {r.status_code}")
+                        if r.status_code in (403, 404, 410):
+                            try:
+                                from app.metadata_cache import set_cached
+                                set_cached(artist, image_url="")
+                                _log("cleared bad image URL from cache (permanent failure)")
+                            except Exception:
+                                pass
         except Exception as e:
             _log(f"art download error: {e}")
     if not art_resolved:
         fallback_path, fallback_kind = _fallback_art_path(channel)
         if fallback_path:
-            import shutil
-            shutil.copy2(fallback_path, art_path)
+            if not _write_fallback_logo_atomic(fallback_path, art_path):
+                _ensure_placeholder_art(art_path)
             if fallback_kind == "channel_logo":
                 _log("art: using channel logo (no artist image)")
             else:
@@ -242,6 +343,7 @@ async def now_playing_loop(
     interval_seconds: float = 10.0,
     stop_event: asyncio.Event | None = None,
     on_song_change: callable | None = None,
+    update_art_each_cycle: bool = True,
 ) -> None:
     """Background task: periodically update song/artist (and art) files for a channel."""
     stop = stop_event or asyncio.Event()
@@ -252,7 +354,12 @@ async def now_playing_loop(
             state = await load_state()
             ch = next((c for c in state.channels if c.id == channel_id), None)
             if ch:
-                title, artist = await write_now_playing_files(stream_dir, ch, state)
+                title, artist = await write_now_playing_files(
+                    stream_dir,
+                    ch,
+                    state,
+                    update_art=update_art_each_cycle,
+                )
                 if on_song_change is not None and (prev_title is not None or prev_artist is not None):
                     if title != prev_title or artist != prev_artist:
                         try:

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom'
 import Home from './views/Home'
 import Channelz from './views/Channelz'
@@ -7,6 +7,7 @@ import Administration from './views/Administration'
 import FfmpegSettings from './views/FfmpegSettings'
 import BackgroundEditor from './views/BackgroundEditor'
 import LiveLogs from './views/LiveLogs'
+import { getVersion } from './api'
 
 const SECTIONS = [
   { id: 'home', label: 'home', path: '/' },
@@ -20,6 +21,8 @@ export default function App() {
   const location = useLocation()
   const navigate = useNavigate()
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [buildId, setBuildId] = useState(null)
+  useEffect(() => { getVersion().then((v) => setBuildId(v?.build)).catch(() => setBuildId('?')) }, [])
 
   const currentSection = SECTIONS.find(s => {
     if (s.path === '/') return location.pathname === '/'
@@ -69,6 +72,7 @@ export default function App() {
             </button>
           ))}
         </nav>
+
       </aside>
 
       <main className="flex-1 flex flex-col min-w-0 overflow-auto">

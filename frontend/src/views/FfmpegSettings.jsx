@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { getAdminState, saveAdminState, stopService, startService } from '../api'
+import { getAdminState, saveAdminState } from '../api'
 
 const defaultSettings = () => ({
   ffmpeg_path: '',
@@ -8,6 +8,8 @@ const defaultSettings = () => ({
   hls_time: 2,
   hls_list_size: 4,
   hls_segmenter_idle_timeout_seconds: 0,
+  channel_idle_shutdown_seconds: 60,
+  log_level: 'debug',
 })
 
 export default function FfmpegSettings() {
@@ -27,18 +29,18 @@ export default function FfmpegSettings() {
         hls_time: Math.max(1, Math.min(30, fs?.hls_time ?? 2)),
         hls_list_size: Math.max(2, Math.min(30, fs?.hls_list_size ?? 4)),
         hls_segmenter_idle_timeout_seconds: Math.max(0, fs?.hls_segmenter_idle_timeout_seconds ?? 0),
+        channel_idle_shutdown_seconds: Math.max(0, fs?.channel_idle_shutdown_seconds ?? 60),
+        log_level: fs?.log_level ?? 'debug',
       })
     }).catch(() => setForm(defaultSettings()))
   }, [])
 
-  const [restartOverlay, setRestartOverlay] = useState(false)
-
   const save = async () => {
     if (!state) return
-    if (!window.confirm('Save FFmpeg settings and restart the streaming service so changes take effect?')) return
+    if (!window.confirm('Save FFmpeg settings?')) return
     setSaving(true)
     setSaveNotify(null)
-    setRestartOverlay(true)
+    
     try {
       const next = {
         ...state,
@@ -48,29 +50,13 @@ export default function FfmpegSettings() {
           hls_time: form.hls_time,
           hls_list_size: form.hls_list_size,
           hls_segmenter_idle_timeout_seconds: form.hls_segmenter_idle_timeout_seconds,
+          channel_idle_shutdown_seconds: form.channel_idle_shutdown_seconds,
+          log_level: form.log_level,
         },
       }
       await saveAdminState(next)
       setState(next)
-      try {
-        await stopService()
-        await startService()
-        const updated = await getAdminState()
-        setState(updated)
-        const fs = updated?.ffmpeg_settings
-        setForm((f) => ({
-          ...f,
-          ffmpeg_path: fs?.ffmpeg_path ?? '',
-          ffprobe_path: fs?.ffprobe_path ?? '',
-          hls_time: Math.max(1, Math.min(30, fs?.hls_time ?? 2)),
-          hls_list_size: Math.max(2, Math.min(30, fs?.hls_list_size ?? 4)),
-          hls_segmenter_idle_timeout_seconds: Math.max(0, fs?.hls_segmenter_idle_timeout_seconds ?? 0),
-        }))
-        setSaveNotify('Settings saved and service restarted.')
-      } catch (restartErr) {
-        console.error(restartErr)
-        setSaveNotify('Settings saved but service restart failed.')
-      }
+      setSaveNotify('Settings saved.')
       setTimeout(() => setSaveNotify(null), 5000)
     } catch (e) {
       console.error(e)
@@ -78,19 +64,12 @@ export default function FfmpegSettings() {
       setTimeout(() => setSaveNotify(null), 5000)
     } finally {
       setSaving(false)
-      setRestartOverlay(false)
+      
     }
   }
 
   return (
     <>
-      {restartOverlay && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70">
-          <div className="rounded-xl border border-surface-500 bg-surface-800 px-8 py-6 text-center shadow-xl">
-            <p className="text-lg font-medium text-white">Please wait while the service restarts…</p>
-          </div>
-        </div>
-      )}
     <div className="p-6 max-w-2xl">
       <button
         type="button"
@@ -161,6 +140,31 @@ export default function FfmpegSettings() {
             className="w-24 px-3 py-2 rounded bg-surface-600 border border-surface-500 text-white"
           />
           <p className="text-xs text-slate-500 mt-1">0 = disabled. Optional timeout after no client requests.</p>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-slate-300 mb-1">Stop channel after no requests (seconds)</label>
+          <input
+            type="number"
+            min={0}
+            value={form.channel_idle_shutdown_seconds ?? 60}
+            onChange={(e) => setForm((f) => ({ ...f, channel_idle_shutdown_seconds: Math.max(0, parseInt(e.target.value, 10) || 0) }))}
+            className="w-24 px-3 py-2 rounded bg-surface-600 border border-surface-500 text-white"
+          />
+          <p className="text-xs text-slate-500 mt-1">Keep FFmpeg running this long after the last viewer disconnects (0 = never auto-stop).</p>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-slate-300 mb-1">Live log level</label>
+          <select
+            value={form.log_level}
+            onChange={(e) => setForm((f) => ({ ...f, log_level: e.target.value }))}
+            className="w-40 px-3 py-2 rounded bg-surface-600 border border-surface-500 text-white"
+          >
+            <option value="debug">Debug (all)</option>
+            <option value="info">Info</option>
+            <option value="warn">Warn</option>
+            <option value="error">Error only</option>
+          </select>
+          <p className="text-xs text-slate-500 mt-1">Minimum level shown in Live Logs. Full logs are always saved to disk.</p>
         </div>
         {saveNotify && <p className="text-sm text-accent-400">{saveNotify}</p>}
         <div className="flex gap-3 pt-2">

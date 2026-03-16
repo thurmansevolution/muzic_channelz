@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { getAdminState, saveAdminState, startService, stopService, exportBackup, restoreBackup, clearMetadataCache, getPlaylistM3uUrl, getGuideXmlUrl, getPublicBaseUrl } from '../api'
+import { getAdminState, saveAdminState, startServer, stopServer, exportBackup, restoreBackup, clearMetadataCache, getPlaylistM3uUrl, getGuideXmlUrl, getPublicBaseUrl } from '../api'
 
 const defaultStation = () => ({ name: '', base_url: '', api_key: '', station_shortcode: '' })
 const defaultProfile = () => ({
@@ -113,7 +113,7 @@ export default function Administration() {
     if (!state) return
     if (
       !window.confirm(
-        'Save all settings and restart the streaming service? (The service will be stopped and started so changes take effect.)',
+        'Save all settings?',
       )
     )
       return
@@ -135,20 +135,7 @@ export default function Administration() {
         : state
       const next = await saveAdminState(toSave)
       setState(next)
-      if (next?.service_started) {
-        try {
-          await stopService()
-          await startService()
-          const updated = await getAdminState()
-          setState(updated)
-          setSaveNotify('Settings saved and service restarted.')
-        } catch (restartErr) {
-          console.error(restartErr)
-          setSaveNotify('Settings saved but restart failed.')
-        }
-      } else {
-        setSaveNotify('Settings saved.')
-      }
+      setSaveNotify('Settings saved.')
       setTimeout(() => setSaveNotify(null), 5000)
     } catch (e) {
       console.error(e)
@@ -157,51 +144,6 @@ export default function Administration() {
     } finally {
       setSaving(false)
       setRestartOverlay(false)
-    }
-  }
-
-  const handleStart = async () => {
-    if (!window.confirm('Start the FFmpeg service? All enabled channels will begin streaming.')) return
-    setServiceAction('starting')
-    try {
-      const res = await startService()
-      const next = await getAdminState()
-      setState(next)
-      if (!res?.ok && res?.message) {
-        window.alert(res.message)
-        return
-      }
-      if (res?.channels && Object.keys(res.channels).length > 0) {
-        const failed = Object.entries(res.channels).filter(([, v]) => v !== 'ok')
-        if (failed.length > 0 && !next?.service_started) {
-          const details = failed.map(([id, err]) => `${id}: ${err}`).join('\n')
-          window.alert(
-            (res.message || 'Service could not stay started.') +
-              '\n\nDetails:\n' + details +
-              '\n\nCheck Live logs for FFmpeg errors.'
-          )
-        } else if (failed.length > 0 && next?.service_started) {
-          window.alert(`Started with some failures:\n${failed.map(([id, err]) => `${id}: ${err}`).join('\n')}`)
-        }
-      } else if (res?.message && !next?.service_started) {
-        window.alert(res.message)
-      }
-    } catch (e) {
-      console.error(e)
-      window.alert(e?.message || 'Failed to start service.')
-    } finally {
-      setServiceAction(null)
-    }
-  }
-
-  const handleStop = async () => {
-    if (!window.confirm('Stop the FFmpeg service? All channel streams will stop.')) return
-    setServiceAction('stopping')
-    try {
-      await stopService()
-      await getAdminState().then(setState)
-    } finally {
-      setServiceAction(null)
     }
   }
 
@@ -218,37 +160,66 @@ export default function Administration() {
       )}
     <div className="p-6 max-w-4xl">
       <h1 className="text-2xl font-semibold text-white mb-2">administration</h1>
-      <p className="text-slate-400 text-sm mb-6">Configure Azuracast, metadata providers, FFmpeg profiles, and channels. Then start the service.</p>
+      <p className="text-slate-400 text-sm mb-6">Configure Azuracast, metadata providers, FFmpeg profiles, and channelz.</p>
 
-      {/* Service control */}
+      {/* Server control */}
       <section className="mb-8 rounded-xl border border-surface-500 bg-surface-700/50 p-6">
-        <h2 className="text-lg font-medium text-white mb-4">Service</h2>
-        <div className="flex gap-3">
-          <button
-            type="button"
-            onClick={handleStart}
-            disabled={state.service_started || serviceAction === 'starting'}
-            className="px-4 py-2 rounded-lg bg-green-600 text-white font-medium hover:bg-green-500 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {serviceAction === 'starting' ? 'Starting…' : 'Start service'}
-          </button>
-          <button
-            type="button"
-            onClick={handleStop}
-            disabled={!state.service_started || serviceAction === 'stopping'}
-            className="px-4 py-2 rounded-lg border border-red-500/60 text-red-400 font-medium hover:bg-red-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {serviceAction === 'stopping' ? 'Stopping…' : 'Stop service'}
-          </button>
+        <h2 className="text-lg font-medium text-white mb-4">Server</h2>
+        <p className="text-slate-400 text-sm mb-2">
+          Server status: {state.service_started ? <span className="text-green-400">Running</span> : <span className="text-amber-400">Disabled</span>}
+          {!state.service_started}
+        </p>
+        <div className="flex gap-3 items-center">
+          {!state.service_started ? (
+            <button
+              type="button"
+              onClick={async () => {
+                setServiceAction('starting')
+                try {
+                  await startServer()
+                  const next = await getAdminState()
+                  setState(next)
+                } catch (e) {
+                  window.alert(e?.message || 'Failed to start server.')
+                } finally {
+                  setServiceAction(null)
+                }
+              }}
+              disabled={serviceAction === 'starting'}
+              className="px-4 py-2 rounded-lg bg-green-600 text-white font-medium hover:bg-green-500 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {serviceAction === 'starting' ? 'Starting…' : 'Start Server'}
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={async () => {
+                if (!window.confirm('Stop the server? All channels will stop and will fail to play until the server is started again.')) return
+                setServiceAction('stopping')
+                try {
+                  await stopServer()
+                  setState((s) => s ? { ...s, service_started: false } : s)
+                  window.alert('Server is shutting down.')
+                } catch (e) {
+                  window.alert(e?.message || 'Failed to stop server.')
+                } finally {
+                  setServiceAction(null)
+                }
+              }}
+              disabled={serviceAction === 'stopping'}
+              className="px-4 py-2 rounded-lg border border-red-500/60 text-red-400 font-medium hover:bg-red-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {serviceAction === 'stopping' ? 'Stopping…' : 'Stop Server'}
+            </button>
+          )}
         </div>
-        {state.service_started && <p className="mt-2 text-sm text-green-400">Service is running.</p>}
       </section>
 
       {/* HDHomeRun / Live TV */}
       <section className="mb-8 rounded-xl border border-surface-500 bg-surface-700/50 p-6">
         <h2 className="text-lg font-medium text-white mb-4">TV Tuner </h2>
         <p className="text-slate-400 text-sm mb-4">
-          Add this server as a HDHomerun tuner (in Plex or Jellyfin) and adjust the amount of tuners you would like to use. Making adjustments to this section will require a service restart.
+          HDHR TV Tuner settings. Making adjustments to this section will require a service restart.
         </p>
         <div className="space-y-3 mb-4">
           <div>
