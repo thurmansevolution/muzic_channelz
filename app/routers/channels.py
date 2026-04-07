@@ -68,6 +68,23 @@ def _stock_logo_path() -> Path | None:
     return None
 
 
+def _logo_version(channel_id: str) -> int:
+    """Return the mtime (seconds) of a channel's logo file for use as a URL cache-buster.
+
+    When a logo is uploaded/replaced the mtime changes, so the URL changes, and Plex
+    is forced to re-fetch instead of serving its cached copy.  Matches ErsatzTV's
+    ?v={mtime} strategy in its XMLTV channel template.
+    """
+    logos_dir = _channel_logos_dir()
+    custom = logos_dir / f"{channel_id}.png"
+    if custom.is_file():
+        return int(custom.stat().st_mtime)
+    stock = _stock_logo_path()
+    if stock and stock.is_file():
+        return int(stock.stat().st_mtime)
+    return 0
+
+
 def _channel_logo_bytes(channel_id: str) -> bytes | None:
     """Return PNG bytes for the channel logo (custom if uploaded, else stock), or None if no file."""
     logos_dir = _channel_logos_dir()
@@ -130,6 +147,8 @@ async def list_channels() -> list[dict]:
 @router.post("/{channel_id}/stop")
 async def stop_channel_endpoint(channel_id: str, grace: bool = False) -> dict:
     """Force stop a channel's FFmpeg process. grace=true means navigation-away stop (no user-stopped flag)."""
+    if not all(c.isalnum() or c in "-_" for c in channel_id):
+        raise HTTPException(400, "Invalid channel ID")
     from app.ffmpeg_runner import append_app_log
     if grace:
         append_app_log(f"channel {channel_id} grace stop (navigation away)", "debug")
@@ -142,6 +161,8 @@ async def stop_channel_endpoint(channel_id: str, grace: bool = False) -> dict:
 @router.post("/{channel_id}/restart")
 async def restart_channel_endpoint(channel_id: str) -> dict:
     """Restart a channel's FFmpeg process (stop + start)."""
+    if not all(c.isalnum() or c in "-_" for c in channel_id):
+        raise HTTPException(400, "Invalid channel ID")
     from app.ffmpeg_runner import append_app_log
     append_app_log(f"channel {channel_id} restart requested by user", "info")
     result = await services.restart_channel(channel_id)
@@ -158,7 +179,7 @@ async def get_playlist_m3u():
     for i, c in enumerate(channels):
         ch_num = _guide_number(c, i)
         name = (c.name or _station_name_for_channel(state, c) or c.slug or c.id or "Channel").replace(",", " ")
-        logo_url = f"{base}/api/channels/logo/{c.id}"
+        logo_url = f"{base}/api/channels/logo/{c.id}?v={_logo_version(c.id)}"
         out_lines.append(f'#EXTINF:-1 tvg-chno="{ch_num}" tvg-name="{name}" tvg-logo="{logo_url}" group-title="muzic channelz",{name}')
         out_lines.append(f"{base}/stream/{c.id}/index.m3u8")
     body = "\n".join(out_lines) + "\n"
@@ -207,7 +228,7 @@ async def get_guide_xml(request: Request):
         parts.append(f"    <display-name>{ch_num} {name}</display-name>")
         parts.append(f"    <display-name>{ch_num}</display-name>")
         parts.append(f"    <display-name>{name}</display-name>")
-        icon_src = f"{base}/api/channels/logo/{c.id}.png"
+        icon_src = f"{base}/api/channels/logo/{c.id}.png?v={_logo_version(c.id)}"
         parts.append(f'    <icon src="{icon_src}"/>')
         parts.append("  </channel>")
     for i, c in enumerate(channels):
@@ -233,6 +254,8 @@ async def get_channel_logo(channel_id: str, request: Request):
     Accepts .../logo/id or .../logo/id.png."""
     if channel_id.endswith(".png"):
         channel_id = channel_id[:-4]
+    if not all(c.isalnum() or c in "-_" for c in channel_id):
+        raise HTTPException(400, "Invalid channel ID")
     state = await load_admin_state()
     if not next((c for c in (state.channels or []) if c.id == channel_id), None):
         raise HTTPException(404, "Channel not found")
@@ -255,26 +278,39 @@ async def get_channel_logo(channel_id: str, request: Request):
             media_type="image/png",
             headers={"Content-Length": str(file_size), "Cache-Control": "public, max-age=3600"},
         )
+    _cache_headers = {"Cache-Control": "public, max-age=86400"}
     custom = logos_dir / f"{channel_id}.png"
     if custom.is_file():
-        return FileResponse(custom, media_type="image/png")
+        return FileResponse(custom, media_type="image/png", headers=_cache_headers)
     stock = _stock_logo_path()
     if stock:
-        return FileResponse(stock, media_type="image/png")
+        return FileResponse(stock, media_type="image/png", headers=_cache_headers)
     raise HTTPException(404, "No logo available")
 
 
 @router.post("/logo/{channel_id}")
 async def upload_channel_logo(channel_id: str, file: UploadFile = File(...)):
     """Upload a custom channel logo (used in XMLTV/guide). Replaces existing. PNG recommended."""
+    if not all(c.isalnum() or c in "-_" for c in channel_id):
+        raise HTTPException(400, "Invalid channel ID")
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(400, "File must be an image")
+    
+    # 5MB limit
+    MAX_SIZE = 5 * 1024 * 1024
+    content = await file.read()
+    if len(content) > MAX_SIZE:
+        raise HTTPException(400, "File too large (max 5MB)")
+
     state = await load_admin_state()
     if not next((c for c in (state.channels or []) if c.id == channel_id), None):
         raise HTTPException(404, "Channel not found")
-    logos_dir = _channel_logos_dir()
-    path = logos_dir / f"{channel_id}.png"
-    content = await file.read()
+    
+    logos_dir = _channel_logos_dir().resolve()
+    path = (logos_dir / f"{channel_id}.png").resolve()
+    if not path.is_relative_to(logos_dir):
+         raise HTTPException(400, "Invalid channel ID")
+
     path.write_bytes(content)
     return {"ok": True, "channel_id": channel_id}
 
@@ -282,11 +318,17 @@ async def upload_channel_logo(channel_id: str, file: UploadFile = File(...)):
 @router.delete("/logo/{channel_id}")
 async def remove_channel_logo(channel_id: str):
     """Remove the uploaded channel logo so the stock logo is used again."""
+    if not all(c.isalnum() or c in "-_" for c in channel_id):
+        raise HTTPException(400, "Invalid channel ID")
     state = await load_admin_state()
     if not next((c for c in (state.channels or []) if c.id == channel_id), None):
         raise HTTPException(404, "Channel not found")
-    logos_dir = _channel_logos_dir()
-    path = logos_dir / f"{channel_id}.png"
+    
+    logos_dir = _channel_logos_dir().resolve()
+    path = (logos_dir / f"{channel_id}.png").resolve()
+    if not path.is_relative_to(logos_dir):
+         raise HTTPException(400, "Invalid channel ID")
+
     if path.is_file():
         path.unlink()
     return {"ok": True, "channel_id": channel_id}
@@ -295,6 +337,8 @@ async def remove_channel_logo(channel_id: str):
 @router.get("/{channel_id}/m3u")
 async def get_m3u(channel_id: str):
     """Return M3U playlist that points to the HLS stream. URL uses this server's IP (or MUZIC_PUBLIC_HOST in Docker)."""
+    if not all(c.isalnum() or c in "-_" for c in channel_id):
+        raise HTTPException(400, "Invalid channel ID")
     state = await load_admin_state()
     ch = next((c for c in state.channels if c.id == channel_id), None)
     if not ch:
@@ -314,6 +358,8 @@ async def get_m3u(channel_id: str):
 @router.get("/{channel_id}/ersatztv-yml")
 async def get_ersatztv_yml(channel_id: str) -> Response:
     """Return a YAML file for ErsatzTV Remote Stream. URL uses this server's IP (or MUZIC_PUBLIC_HOST in Docker)."""
+    if not all(c.isalnum() or c in "-_" for c in channel_id):
+        raise HTTPException(400, "Invalid channel ID")
     state = await load_admin_state()
     ch = next((c for c in state.channels if c.id == channel_id), None)
     if not ch:
@@ -341,6 +387,8 @@ duration: "24:00:00"
 @router.patch("/{channel_id}")
 async def update_channel(channel_id: str, body: dict) -> dict:
     """Update channel properties (e.g. background). Restart channel if running so changes apply."""
+    if not all(c.isalnum() or c in "-_" for c in channel_id):
+        raise HTTPException(400, "Invalid channel ID")
     state = await load_admin_state()
     for i, c in enumerate(state.channels):
         if c.id == channel_id:

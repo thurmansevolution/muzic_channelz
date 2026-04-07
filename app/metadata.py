@@ -32,6 +32,39 @@ def _is_type_only_bio(s: str) -> bool:
     return bool(re.match(pattern, s, re.IGNORECASE))
 
 
+def _clean_artist_name(artist: str) -> str:
+    """
+    Cleans artist names by removing collaboration tags and extra metadata.
+    Example: 'Louis Singer (featuring DuReal)' -> 'Louis Singer'
+    Example: 'Louis Singer/DuReal' -> 'Louis Singer'
+    """
+    artist = (artist or "").strip()
+    if not artist or artist == "—":
+        return artist
+
+    # 1. Split by common delimiters and take the first artist
+    for delim in ("/", " & ", " | ", "; "):
+        if delim in artist:
+            artist = artist.split(delim)[0].strip()
+
+    # 2. Remove collaboration suffixes and common track metadata
+    patterns = [
+        r"\s+[\(\[]feat\.?.*[\)\]]",
+        r"\s+feat\.?\s+.*",
+        r"\s+[\(\[]featuring.*[\)\]]",
+        r"\s+featuring\s+.*",
+        r"\s+[\(\[]ft\.?.*[\)\]]",
+        r"\s+ft\.?\s+.*",
+        r"\s+[\(\[]live.*[\)\]]",
+        r"\s+[\(\[]remastered.*[\)\]]",
+        r"\s+[\(\[]official.*[\)\]]",
+    ]
+    for p in patterns:
+        artist = re.sub(p, "", artist, flags=re.IGNORECASE).strip()
+
+    return artist
+
+
 async def _fetch_musicbrainz(artist: str) -> str:
     """MusicBrainz: no API key. Search artist, return type + disambiguation. Not used as bio when it's only type/country."""
     if not (artist or "").strip():
@@ -191,7 +224,7 @@ async def fetch_artist_bio(
     log_cb: Callable[[str], None] | None = None,
 ) -> str:
     """Return a short artist bio/summary; uses and populates metadata cache to reduce API usage."""
-    artist = (artist or "").strip()
+    artist = _clean_artist_name(artist)
     if not artist or artist == "—":
         if log_cb:
             log_cb("artist empty or placeholder, skip metadata")
@@ -311,10 +344,22 @@ async def fetch_artist_image_url_musicbrainz(
         url_obj = rel.get("url")
         if isinstance(url_obj, dict):
             resource = (url_obj.get("resource") or "").strip()
-            if resource and resource.startswith("http"):
+            if not resource or not resource.startswith("http"):
+                continue
+
+            # Wikimedia Commons pages (e.g. /wiki/File:...) are not direct images.
+            # We must resolve them to a direct image file.
+            if "commons.wikimedia.org/wiki/File:" in resource:
+                file_name = resource.split("File:")[-1]
+                # Special:FilePath is a reliable redirect to the actual image file.
+                resolved = f"https://commons.wikimedia.org/wiki/Special:FilePath/{file_name}?width=1000"
                 if log_cb:
-                    log_cb(f"MusicBrainz artist image={artist!r} -> {resource[:60]}…")
-                return resource
+                    log_cb(f"MusicBrainz resolved Wikimedia: {file_name} -> {resolved}")
+                return resolved
+
+            if log_cb:
+                log_cb(f"MusicBrainz artist image={artist!r} -> {resource[:60]}…")
+            return resource
     if log_cb:
         log_cb(f"MusicBrainz no image relation for {artist!r}")
     return ""
@@ -524,7 +569,7 @@ async def fetch_artist_image_url(
     log_cb: Callable[[str], None] | None = None,
 ) -> str:
     """Return URL of artist image (or file:// path to cached image). Use cache if present, else fetch and cache."""
-    artist = (artist or "").strip()
+    artist = _clean_artist_name(artist)
     if not artist or artist == "—":
         return ""
     from app.metadata_cache import get_cached, set_cached
@@ -573,17 +618,27 @@ async def fetch_artist_image_url(
             except Exception:
                 continue
             try:
-                LASTFM_PLACEHOLDER_HASH = "2a96cbd8b46e442fc41c2b86b821562f"
+                # Last.fm returns these "star" placeholders when no artist image is present.
+                LASTFM_PLACEHOLDER_HASHES = {
+                    "2a96cbd8b46e442fc41c2b86b821562f",
+                    "c6f5921e570740514122d25626989f9d",
+                }
                 images = (data.get("artist") or {}).get("image") or []
                 for size in ("extralarge", "large", "medium", "small"):
                     for img in images:
                         if isinstance(img, dict) and img.get("size") == size:
                             u = (img.get("#text") or img.get("url") or "").strip()
-                            if u and u.startswith("http") and LASTFM_PLACEHOLDER_HASH not in u:
-                                if log_cb:
-                                    log_cb(f"Last.fm artist image={artist!r} -> {size}")
-                                set_cached(artist, image_url=u)
-                                return u
+                            if u and u.startswith("http"):
+                                is_placeholder = False
+                                for h in LASTFM_PLACEHOLDER_HASHES:
+                                    if h in u:
+                                        is_placeholder = True
+                                        break
+                                if not is_placeholder:
+                                    if log_cb:
+                                        log_cb(f"Last.fm artist image={artist!r} -> {size}")
+                                    set_cached(artist, image_url=u)
+                                    return u
             except Exception:
                 pass
         elif name == "Deezer":
@@ -613,6 +668,8 @@ async def fetch_artist_image_url(
             if url:
                 set_cached(artist, image_url=url)
                 return url
+
     if log_cb and artist:
         log_cb(f"no artist image for {artist!r}")
+    set_cached(artist, image_url="")
     return ""

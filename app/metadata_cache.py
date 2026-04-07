@@ -81,7 +81,7 @@ def set_cached(artist: str, *, bio: str | None = None, image_url: str | None = N
             pass
     if not isinstance(data, dict):
         data = {}
-    entry = data.setdefault(key, {"bio": None, "image_url": ""})
+    entry = data.setdefault(key, {"bio": None})
     if bio is not None:
         entry["bio"] = bio
     if image_url is not None:

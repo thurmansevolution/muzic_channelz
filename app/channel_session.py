@@ -442,7 +442,7 @@ class ChannelSession:
             cmd.extend([
                 "-reconnect", "1", "-reconnect_at_eof", "1",
                 "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
-                "-thread_queue_size", "1024",
+                "-thread_queue_size", "128",
                 "-i", audio_url,
             ])
             audio_input_index, video_input_index = 0, 1

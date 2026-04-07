@@ -70,3 +70,22 @@ v2.0 Beta Update (15/3/26) -
  - VAAPI hardware acceleratioin should now work (sorry that it didn't work in the last release)
  - The backend was reworked a little...muzic channelz now "listens" for requests before starting a stream (which is torn down shortly after the user leaves a channel), instead of always streaming. Users may now add as many channelz as they wish, and the user is only limited to how many concurrent streams instead of how many total channelz.
  - Minor UI and stability improvements.
+
+
+---
+
+v3.0 Beta Update (7/4/26)
+
+ - Improvements were made to metadata scraping
+ - Starting a channel is now a little faster...averaging around 7-10 seconds to display video when the channel is started via Plex (I don't have Jellyfin to test)
+ - Minor stability improvements
+
+
+
+
+
+--------------------------------------------
+
+Please note, this, as well as the other applications I contribute, are built with A.I. assistance.  I'm a single dad on a budget, and though I work in I.T. and have some really basic knowledge of some of the easier languages, writing computer programs from memory isn't a strong suite of mine.  But, I'm a dreamer and developer, and want to make applications that make my own personal life a little easier and a little more fun...and I'm happy to share any of this with anyone who finds this software, or any of the other software I put together, useful for them in any way. 
+
+For this particular software, I'm planning on continuing development until it reaches the hard limit of features I have planned - at that time it will be moved from "Beta" to "Final Release". And for as long as I'm using the sofware, I will continue to push and share any updates that will keep this software functional.   

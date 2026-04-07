@@ -65,11 +65,21 @@ async def upload_background(
 ) -> dict:
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(400, "File must be an image")
+    
+    # 10MB limit for backgrounds
+    MAX_SIZE = 10 * 1024 * 1024
+    content = await file.read()
+    if len(content) > MAX_SIZE:
+        raise HTTPException(400, "File too large (max 10MB)")
+
     bg_id = str(uuid.uuid4())[:8]
     filename = f"{bg_id}.png"
-    path = (settings.backgrounds_dir or settings.data_dir / "backgrounds") / filename
+    root = (settings.backgrounds_dir or settings.data_dir / "backgrounds").resolve()
+    path = (root / filename).resolve()
+    if not path.is_relative_to(root):
+        raise HTTPException(400, "Invalid background ID")
+
     path.parent.mkdir(parents=True, exist_ok=True)
-    content = await file.read()
     path.write_bytes(content)
     try:
         _resize_background_to_feed(path)
@@ -90,6 +100,8 @@ async def upload_background(
 
 @router.put("/{background_id}")
 async def update_background(background_id: str, body: UpdateBackgroundBody) -> dict:
+    if not all(c.isalnum() or c in "-_" for c in background_id):
+        raise HTTPException(400, "Invalid background ID")
     if background_id in ("stock", "stock-dark"):
         raise HTTPException(400, "Cannot update stock backgrounds")
     backgrounds = await load_backgrounds()
@@ -107,14 +119,16 @@ async def update_background(background_id: str, body: UpdateBackgroundBody) -> d
 @router.delete("/{background_id}")
 async def delete_background(background_id: str) -> dict:
     """Remove a custom background. Cannot delete stock backgrounds."""
+    if not all(c.isalnum() or c in "-_" for c in background_id):
+        raise HTTPException(400, "Invalid background ID")
     if background_id in ("stock", "stock-dark"):
         raise HTTPException(400, "Cannot remove stock backgrounds")
     backgrounds = await load_backgrounds()
     for i, b in enumerate(backgrounds):
         if b.id == background_id:
-            root = settings.backgrounds_dir or settings.data_dir / "backgrounds"
-            image_path = root / b.image_path
-            if image_path.exists():
+            root = (settings.backgrounds_dir or settings.data_dir / "backgrounds").resolve()
+            image_path = (root / b.image_path).resolve()
+            if image_path.is_relative_to(root) and image_path.exists():
                 try:
                     image_path.unlink()
                 except OSError:
@@ -128,6 +142,8 @@ async def delete_background(background_id: str) -> dict:
 @router.get("/{background_id}/image")
 async def get_background_image(background_id: str):
     """Serve the image file for a background. Stock dark is built-in; custom from store."""
+    if not all(c.isalnum() or c in "-_" for c in background_id):
+        raise HTTPException(400, "Invalid background ID")
     if background_id == "stock-dark":
         from app.overlay import ensure_stock_dark_background_png
         try:
@@ -139,8 +155,8 @@ async def get_background_image(background_id: str):
     bg = next((b for b in backgrounds if b.id == background_id), None)
     if not bg or bg.is_stock:
         raise HTTPException(404, "Background not found")
-    root = settings.backgrounds_dir or settings.data_dir / "backgrounds"
-    path = root / bg.image_path
-    if not path.exists():
+    root = (settings.backgrounds_dir or settings.data_dir / "backgrounds").resolve()
+    path = (root / bg.image_path).resolve()
+    if not path.is_relative_to(root) or not path.exists():
         raise HTTPException(404, "Image file not found")
     return FileResponse(path)

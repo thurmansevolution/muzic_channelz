@@ -430,7 +430,7 @@ export default function Administration() {
         <p className="text-slate-400 text-sm mb-3">
           Optional. Used to fill the <strong>Artist bio</strong> and <strong>Artist image</strong> in live channelz. <strong>Custom</strong>: base URL and API key for your own provider.</p>
         {(state.metadata_providers || []).map((prov, i) => {
-          const knownProviders = ['MusicBrainz', 'Last.fm', 'TheAudioDB', 'Discogs', 'Spotify', 'Genius', 'iTunes', 'Deezer', 'Custom']
+          const knownProviders = ['MusicBrainz', 'Last.fm', 'TheAudioDB', 'Discogs', 'Spotify', 'Genius', 'Custom']
           const isCustom = prov.name && !knownProviders.includes(prov.name)
           const isCustomOption = prov.name === 'Custom' || isCustom
           const selectedProvider = knownProviders.includes(prov.name) ? prov.name : (isCustom ? 'Custom' : prov.name || '')
@@ -452,8 +452,6 @@ export default function Administration() {
                 <option value="Discogs">Discogs</option>
                 <option value="Spotify">Spotify</option>
                 <option value="Genius">Genius</option>
-                <option value="iTunes">iTunes</option>
-                <option value="Deezer">Deezer</option>
                 <option value="Custom">Custom</option>
               </select>
               {(selectedProvider === 'Custom' || !selectedProvider) && (

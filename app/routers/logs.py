@@ -45,6 +45,8 @@ async def clear_app_log() -> dict:
 @router.get("/{channel_id}", response_class=PlainTextResponse)
 async def get_log_content(channel_id: str, tail: int = 200) -> str:
     """Return the last N lines of a channel's FFmpeg log, filtered by configured log level."""
+    if not all(c.isalnum() or c in "-_" for c in channel_id):
+        return ""
     path = get_channel_log_path(channel_id)
     if not path.exists():
         return ""

@@ -177,7 +177,7 @@ async def restore_backup(body: RestoreBody) -> dict:
     state_restored.service_started = False
     await save_admin_state(state_restored)
 
-    root = settings.backgrounds_dir or settings.data_dir / "backgrounds"
+    root = (settings.backgrounds_dir or settings.data_dir / "backgrounds").resolve()
     root.mkdir(parents=True, exist_ok=True)
     for bid, b64 in (body.background_images or {}).items():
         try:
@@ -187,22 +187,33 @@ async def restore_backup(body: RestoreBody) -> dict:
         bg = next((b for b in body.backgrounds if b.get("id") == bid), None)
         if not bg or bg.get("is_stock") or not bg.get("image_path"):
             continue
-        path = root / bg["image_path"]
+        # Sanitize image_path
+        img_name = Path(bg["image_path"]).name
+        if not img_name.endswith(".png"):
+            continue
+        path = (root / img_name).resolve()
+        if not path.is_relative_to(root):
+            continue
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(raw)
 
     templates = [BackgroundTemplate.model_validate(b) for b in (body.backgrounds or [])]
     await save_backgrounds(templates)
 
-    logos_dir = _channel_logos_dir()
+    logos_dir = _channel_logos_dir().resolve()
     for channel_id, b64 in (body.channel_logos or {}).items():
         if not channel_id or not isinstance(b64, str):
+            continue
+        # Validate channel_id
+        if not all(c.isalnum() or c in "-_" for c in channel_id):
             continue
         try:
             raw = base64.b64decode(b64, validate=True)
         except Exception:
             continue
-        path = logos_dir / f"{channel_id}.png"
+        path = (logos_dir / f"{channel_id}.png").resolve()
+        if not path.is_relative_to(logos_dir):
+            continue
         try:
             path.write_bytes(raw)
         except OSError:

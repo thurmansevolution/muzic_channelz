@@ -84,14 +84,46 @@ async def lineup_status_json(request: Request):
     return JSONResponse({
         "ScanInProgress": 0,
         "ScanPossible": 1,
-        "Source": "Antenna",
-        "SourceList": ["Antenna"],
+        "Source": "Cable",
+        "SourceList": ["Cable"],
     })
+
+
+async def device_xml(request: Request):
+    """UPnP/DLNA device description. Plex polls this URL to verify the tuner is online.
+    Without it, Plex marks the device as 'Device not found' in Live TV & DVR settings."""
+    from fastapi.responses import Response as _Response
+    state = await load_admin_state()
+    device_id = (state.hdhr_uuid or "").strip()
+    if not device_id:
+        device_id = str(uuid_mod.uuid4())
+    base = _server_base_url(request)
+    xml = f"""<root xmlns="urn:schemas-upnp-org:device-1-0">
+    <URLBase>{base}</URLBase>
+    <specVersion>
+        <major>1</major>
+        <minor>0</minor>
+    </specVersion>
+    <device>
+        <deviceType>urn:schemas-upnp-org:device:MediaServer:1</deviceType>
+        <friendlyName>muzic channelz</friendlyName>
+        <manufacturer>Silicondust</manufacturer>
+        <modelName>HDTC-2US</modelName>
+        <modelNumber>HDTC-2US</modelNumber>
+        <serialNumber>{device_id}</serialNumber>
+        <UDN>uuid:{device_id}</UDN>
+    </device>
+</root>"""
+    return _Response(
+        content=xml.encode("utf-8"),
+        media_type="application/xml; charset=utf-8",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+    )
 
 
 def _lineup_channel_list(state, base: str):
     """Shared channel list for lineup.json and lineup.xml."""
-    from app.routers.channels import _station_name_for_channel
+    from app.routers.channels import _station_name_for_channel, _logo_version
     channels = [c for c in (state.channels or []) if c.enabled]
     out = []
     for i, c in enumerate(channels):
@@ -102,7 +134,7 @@ def _lineup_channel_list(state, base: str):
             "GuideNumber": str(ch_num),
             "GuideName": name,
             "URL": f"{base}/hdhr/stream/{c.id}",
-            "ImageURL": f"{base}/api/channels/logo/{c.id}",
+            "ImageURL": f"{base}/api/channels/logo/{c.id}?v={_logo_version(c.id)}",
         })
     return out
 
@@ -137,11 +169,13 @@ async def guide_xml(request: Request):
 async def stream_channel_ts(channel_id: str, request: Request):
     """Stream channel as MPEG-TS for HDHomeRun clients (Plex, Kodi, etc.).
 
-    ErsatzTV-style: one lightweight ffmpeg per client reads the HLS playlist
-    via HTTP and pipes MPEG-TS directly to the HTTP response.
-    The m3u8 wait and ffmpeg start happen BEFORE the StreamingResponse is
-    returned so Plex never gets a 200 with no bytes flowing.
+    ErsatzTV-style: return HTTP 200 to Plex immediately, then let the
+    conversion ffmpeg handle waiting for HLS segments via serve_stream's
+    session-aware wait loop.  This eliminates the Python-level polling
+    delay and gets data flowing to Plex as fast as possible.
     """
+    if not all(c.isalnum() or c in "-_" for c in channel_id):
+        raise HTTPException(400, "Invalid channel ID")
     from app import services
     from app.ffmpeg_runner import append_app_log
     from app.models import FFmpegSettings
@@ -151,55 +185,54 @@ async def stream_channel_ts(channel_id: str, request: Request):
     if not ch:
         raise HTTPException(404, "Channel not found")
 
-    if getattr(state, "service_started", False):
-        await services.start_channel(channel_id)
+    if not getattr(state, "service_started", False):
+        raise HTTPException(503, "Service not started — enable the service in Administration first")
 
+    await services.start_channel(channel_id)
     services.notify_stream_request(channel_id)
 
     ff_settings = state.ffmpeg_settings or FFmpegSettings()
     ffmpeg_executable = (ff_settings.ffmpeg_path or "ffmpeg").strip() or "ffmpeg"
 
-    streams_dir = settings.data_dir / "streams" / channel_id
-    m3u8_path = streams_dir / "index.m3u8"
-
-    # Wait for the HLS playlist to appear BEFORE returning the response.
-    # This gives Plex a proper 503 if the channel never starts, instead of
-    # a 200 with no data (which Plex treats as a stream error).
-    for _ in range(40):
-        if m3u8_path.is_file():
-            break
-        services.notify_stream_request(channel_id)
-        await asyncio.sleep(0.5)
-
-    if not m3u8_path.is_file():
-        append_app_log(f"hdhr/{channel_id}: m3u8 never appeared — returning 503", "warn")
-        raise HTTPException(503, "Channel not ready — try again shortly")
-
     # Use the HTTP URL so ffmpeg's HLS demuxer live-polls for new segments.
-    # A local file:// path causes ffmpeg to read the playlist once and exit (VOD behaviour).
+    # serve_stream has a session-aware wait loop: if the channel session exists
+    # but the m3u8 isn't ready yet it blocks (async) at 100ms intervals for up
+    # to 15s before returning 404 — so the conversion ffmpeg never gets a 404
+    # during a normal cold start.
     hls_url = f"http://127.0.0.1:{settings.port}/stream/{channel_id}/index.m3u8"
 
     logs_dir = settings.data_dir / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
     log_path = logs_dir / f"ffmpeg_hdhr_{channel_id}.log"
 
-    # Start conversion ffmpeg NOW (before the generator) so data is flowing
-    # before the first yield — eliminating the first-byte delay Plex times out on.
-    # -live_start_index -1      → start from the most recent segment.
-    # -reconnect* flags         → survive brief HLS gaps (e.g. main ffmpeg auto-restart).
-    # -timeout 30000000         → 30s HTTP timeout in microseconds.
-    # -c copy                   → no re-encoding, just container remux.
-    # -mpegts_flags +resend_headers → re-send PAT/PMT tables periodically (Plex needs this).
-    # -f mpegts pipe:1          → continuous MPEG-TS to stdout.
+    # Spawn conversion ffmpeg IMMEDIATELY — do not wait for m3u8 to exist.
+    # HTTP 200 is returned to Plex as soon as the StreamingResponse is created,
+    # so Plex sees an instant response and simply waits for data to flow.
+    #
+    # -probesize 500000         → 500KB probe (default 5MB) — saves ~3-4s
+    # -analyzeduration 500000   → 0.5s analyze (default 5s)  — saves ~3-4s
+    # -fflags +nobuffer         → disable output buffering — first byte ASAP
+    # -max_delay 0              → zero demuxer delay
+    # -live_start_index -1      → start from the most recent HLS segment
+    # -reconnect* flags         → survive brief HLS gaps (main ffmpeg restart)
+    # -reconnect_delay_max 2    → retry within 2s (not 5s) on HLS gap
+    # -timeout 30000000         → 30s HTTP timeout in microseconds
+    # -c copy                   → no re-encoding, just container remux
+    # -mpegts_flags +resend_headers → re-send PAT/PMT periodically (Plex needs this)
+    # -f mpegts pipe:1          → continuous MPEG-TS to stdout
     stderr_f = open(log_path, "ab")
     proc = await asyncio.create_subprocess_exec(
         ffmpeg_executable,
         "-hide_banner",
         "-loglevel", "warning",
+        "-probesize", "500000",
+        "-analyzeduration", "500000",
+        "-fflags", "+nobuffer",
+        "-max_delay", "0",
         "-reconnect", "1",
         "-reconnect_at_eof", "1",
         "-reconnect_streamed", "1",
-        "-reconnect_delay_max", "5",
+        "-reconnect_delay_max", "2",
         "-timeout", "30000000",
         "-live_start_index", "-1",
         "-i", hls_url,
@@ -210,7 +243,7 @@ async def stream_channel_ts(channel_id: str, request: Request):
         stdout=asyncio.subprocess.PIPE,
         stderr=stderr_f,
     )
-    append_app_log(f"hdhr/{channel_id}: ErsatzTV-style TS stream started (pid={proc.pid})", "debug")
+    append_app_log(f"hdhr/{channel_id}: conversion ffmpeg started immediately (pid={proc.pid})", "debug")
 
     async def generate():
         disconnect_check = asyncio.create_task(request.is_disconnected())

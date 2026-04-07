@@ -91,11 +91,17 @@ async def lifespan(app: FastAPI):
     if state.service_started:
         state.service_started = False
         _dirty = True
-    if state.ffmpeg_settings and getattr(state.ffmpeg_settings, "channel_idle_shutdown_seconds", 0) <= 60:
+    if not state.ffmpeg_settings:
+        state.ffmpeg_settings = FFmpegSettings()
+        _dirty = True
+    if getattr(state.ffmpeg_settings, "channel_idle_shutdown_seconds", 0) <= 60:
         state.ffmpeg_settings.channel_idle_shutdown_seconds = 300
         _dirty = True
-    elif not state.ffmpeg_settings:
-        state.ffmpeg_settings = FFmpegSettings()
+    if getattr(state.ffmpeg_settings, "hls_time", 2) >= 2:
+        state.ffmpeg_settings.hls_time = 1
+        _dirty = True
+    if getattr(state.ffmpeg_settings, "hls_list_size", 10) <= 10:
+        state.ffmpeg_settings.hls_list_size = 15
         _dirty = True
     if _dirty:
         await save_admin_state(state)
@@ -139,6 +145,7 @@ app.include_router(stream.router)
 # HDHomeRun / Live TV: root paths so they are not caught by SPA
 app.get("/discover.json", include_in_schema=False)(hdhr.discover_json)
 app.get("/device.json", include_in_schema=False)(hdhr.device_json)
+app.get("/device.xml", include_in_schema=False)(hdhr.device_xml)
 app.get("/lineup.json", include_in_schema=False)(hdhr.lineup_json)
 app.get("/lineup.xml", include_in_schema=False)(hdhr.lineup_xml)
 app.get("/guide.xml", include_in_schema=False)(hdhr.guide_xml)
@@ -203,18 +210,20 @@ async def serve_stream(path: str):
         append_app_log(f"serve_stream: channel {channel_id} HLS playlist request — already running", "debug")
 
     stream_file = _streams_dir / path
-    if channel_id in _channel_starting or (channel_id and not stream_file.is_file() and services.is_running(channel_id)):
+    # Wait when: (a) serve_stream itself started the channel, or (b) a session
+    # exists (hdhr.py started it) but the file isn't ready yet.
+    # Poll at 100ms so the conversion ffmpeg gets the m3u8 as soon as it appears.
+    _session_exists = channel_id is not None and services.get_sessions().get(channel_id) is not None
+    if channel_id in _channel_starting or (_session_exists and not stream_file.is_file()):
         if _is_playlist:
-            append_app_log(f"serve_stream: waiting for channel {channel_id} to initialize (channel_starting={channel_id in _channel_starting})", "debug")
-        waited = 0
-        for _ in range(20):
-            await _asyncio.sleep(1)
-            waited += 1
+            append_app_log(f"serve_stream: waiting for channel {channel_id} to initialize", "debug")
+        for _ in range(150):
+            await _asyncio.sleep(0.1)
             stream_file = _streams_dir / path
             if stream_file.is_file() and channel_id not in _channel_starting:
                 break
         if _is_playlist:
-            append_app_log(f"serve_stream: channel {channel_id} wait complete after {waited}s — file_exists={stream_file.is_file()}", "debug")
+            append_app_log(f"serve_stream: channel {channel_id} wait complete — file_exists={stream_file.is_file()}", "debug")
 
     stream_file = _streams_dir / path
     if not stream_file.is_file() or not stream_file.resolve().is_relative_to(_streams_dir.resolve()):
@@ -255,14 +264,14 @@ if _index_html.exists():
             from fastapi import HTTPException
             raise HTTPException(404, "Not found")
         if full_path.startswith("static/"):
-            static_file = _static_dir / full_path.replace("static/", "", 1)
-            if static_file.is_file():
+            static_file = (_static_dir / full_path.replace("static/", "", 1)).resolve()
+            if static_file.is_file() and static_file.is_relative_to(_static_dir.resolve()):
                 return FileResponse(static_file)
             from fastapi import HTTPException
             raise HTTPException(404, "Not found")
         if full_path and "." in full_path:
-            f = frontend_path / full_path
-            if f.is_file():
+            f = (frontend_path / full_path).resolve()
+            if f.is_file() and f.is_relative_to(frontend_path.resolve()):
                 return FileResponse(f)
         return FileResponse(_index_html)
 else:
