@@ -81,7 +81,7 @@ v3.0 Beta Update (7/4/26)
  - Minor stability improvements
 
 
-
+v3.1 Beta Update (13/4/26) - minor fixes to artist image issues that I accidently caused in 3.0.  Also there was an issue with Plex and how muzic channelz would appear as disconnected in Live TV and DVR...that is now fixed.  Sorry bout that. 
 
 
 --------------------------------------------
