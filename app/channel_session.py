@@ -225,8 +225,9 @@ class ChannelSession:
         if not out_dir.is_dir():
             return
         cleaned = 0
+        _overlay_names = {"art.png", "song.txt", "artist.txt", "bio.txt"}
         for f in list(out_dir.iterdir()):
-            if f.is_file() and (f.suffix in (".ts", ".tmp") or f.name == "index.m3u8"):
+            if f.is_file() and (f.suffix in (".ts", ".tmp") or f.name == "index.m3u8" or f.name in _overlay_names):
                 try:
                     f.unlink()
                     cleaned += 1

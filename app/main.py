@@ -86,8 +86,12 @@ async def lifespan(app: FastAPI):
 
     from app.store import load_admin_state, save_admin_state
     from app.models import FFmpegSettings
+    import uuid as _uuid
     state = await load_admin_state()
     _dirty = False
+    if not (state.hdhr_uuid or "").strip():
+        state.hdhr_uuid = _uuid.uuid4().hex[:8].upper()
+        _dirty = True
     if state.service_started:
         state.service_started = False
         _dirty = True

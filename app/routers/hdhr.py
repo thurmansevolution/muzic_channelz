@@ -96,7 +96,7 @@ async def device_xml(request: Request):
     state = await load_admin_state()
     device_id = (state.hdhr_uuid or "").strip()
     if not device_id:
-        device_id = str(uuid_mod.uuid4())
+        device_id = uuid_mod.uuid4().hex[:8].upper()
     base = _server_base_url(request)
     xml = f"""<root xmlns="urn:schemas-upnp-org:device-1-0">
     <URLBase>{base}</URLBase>
@@ -249,7 +249,7 @@ async def stream_channel_ts(channel_id: str, request: Request):
         disconnect_check = asyncio.create_task(request.is_disconnected())
         try:
             while True:
-                # Non-blocking disconnect check.
+                # Check disconnect every loop iteration (runs between short reads).
                 if disconnect_check.done():
                     try:
                         if disconnect_check.result():
@@ -259,21 +259,23 @@ async def stream_channel_ts(channel_id: str, request: Request):
                         break
                     disconnect_check = asyncio.create_task(request.is_disconnected())
 
-                services.notify_stream_request(channel_id)
-
+                # Short 2s timeout so disconnect is detected within 2s of Plex switching
+                # channels, rather than waiting up to 30s for data before looping back.
                 try:
-                    chunk = await asyncio.wait_for(proc.stdout.read(65536), timeout=30.0)
+                    chunk = await asyncio.wait_for(proc.stdout.read(65536), timeout=2.0)
                 except asyncio.TimeoutError:
                     if proc.returncode is not None:
                         append_app_log(f"hdhr/{channel_id}: conversion ffmpeg exited (code={proc.returncode})", "debug")
                         break
-                    append_app_log(f"hdhr/{channel_id}: no data for 30s — closing stream", "warn")
-                    break
+                    # No data yet — loop and re-check disconnect.
+                    continue
 
                 if not chunk:
                     append_app_log(f"hdhr/{channel_id}: conversion ffmpeg stdout EOF (code={proc.returncode})", "debug")
                     break
 
+                # Only reset the idle timer when data is actually flowing to a live client.
+                services.notify_stream_request(channel_id)
                 yield chunk
 
         except (asyncio.CancelledError, GeneratorExit):

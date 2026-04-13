@@ -268,11 +268,12 @@ async def write_now_playing_files(
         stream_dir.joinpath("bio.txt").write_text(_wrap_text(bio, 48, max_lines=9), encoding="utf-8")
         return (title, artist)
 
-    fallback_path, _ = _fallback_art_path(channel)
-    if fallback_path:
-        _write_fallback_logo_atomic(fallback_path, art_path)
-    else:
-        _ensure_placeholder_art(art_path)
+    if not art_path.exists() or art_path.stat().st_size == 0:
+        fallback_path, _ = _fallback_art_path(channel)
+        if fallback_path:
+            _write_fallback_logo_atomic(fallback_path, art_path)
+        else:
+            _ensure_placeholder_art(art_path)
 
     art_url = ""
     if artist and artist != "—":
