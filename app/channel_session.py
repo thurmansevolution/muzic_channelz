@@ -132,6 +132,8 @@ class ChannelSession:
 
     async def _run(self) -> None:
         first_run = True
+        consecutive_failures = 0
+        _MAX_CONSECUTIVE_FAILURES = 10
         while not self._stop_requested:
             state = await load_admin_state()
             ch = next((c for c in (state.channels or []) if c.id == self.channel_id), None)
@@ -180,13 +182,26 @@ class ChannelSession:
                     "warn",
                 )
 
+            if run_duration >= 30.0:
+                consecutive_failures = 0
+            else:
+                consecutive_failures += 1
+                if consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
+                    append_app_log(
+                        f"channel {self.channel_id}: {consecutive_failures} consecutive short crashes "
+                        f"(each <30s) — stopping channel to prevent restart loop. "
+                        f"Fix the channel configuration and restart manually.",
+                        "error",
+                    )
+                    break
+
             now = time.monotonic()
             delay = 3 if (self._last_restart_mono == 0 or (now - self._last_restart_mono) >= 120) else 15
             self._last_restart_mono = now
 
             append_app_log(
                 f"channel {self.channel_id}: auto-restarting in {delay}s "
-                f"(pts_offset={self.pts_offset:.1f}s)",
+                f"(pts_offset={self.pts_offset:.1f}s, consecutive_failures={consecutive_failures})",
                 "warn",
             )
 
@@ -225,7 +240,7 @@ class ChannelSession:
         if not out_dir.is_dir():
             return
         cleaned = 0
-        _overlay_names = {"art.png", "song.txt", "artist.txt", "bio.txt"}
+        _overlay_names = {"art.png", "song.txt", "artist.txt", "bio.txt", "channel_name.txt"}
         for f in list(out_dir.iterdir()):
             if f.is_file() and (f.suffix in (".ts", ".tmp") or f.name == "index.m3u8" or f.name in _overlay_names):
                 try:

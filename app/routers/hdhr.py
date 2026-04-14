@@ -221,29 +221,34 @@ async def stream_channel_ts(channel_id: str, request: Request):
     # -mpegts_flags +resend_headers → re-send PAT/PMT periodically (Plex needs this)
     # -f mpegts pipe:1          → continuous MPEG-TS to stdout
     stderr_f = open(log_path, "ab")
-    proc = await asyncio.create_subprocess_exec(
-        ffmpeg_executable,
-        "-hide_banner",
-        "-loglevel", "warning",
-        "-probesize", "500000",
-        "-analyzeduration", "500000",
-        "-fflags", "+nobuffer",
-        "-max_delay", "0",
-        "-reconnect", "1",
-        "-reconnect_at_eof", "1",
-        "-reconnect_streamed", "1",
-        "-reconnect_delay_max", "2",
-        "-timeout", "30000000",
-        "-live_start_index", "-1",
-        "-i", hls_url,
-        "-c", "copy",
-        "-mpegts_flags", "+resend_headers",
-        "-f", "mpegts",
-        "pipe:1",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=stderr_f,
-    )
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            ffmpeg_executable,
+            "-hide_banner",
+            "-loglevel", "warning",
+            "-probesize", "500000",
+            "-analyzeduration", "500000",
+            "-fflags", "+nobuffer",
+            "-max_delay", "0",
+            "-reconnect", "1",
+            "-reconnect_at_eof", "1",
+            "-reconnect_streamed", "1",
+            "-reconnect_delay_max", "2",
+            "-timeout", "30000000",
+            "-live_start_index", "-1",
+            "-i", hls_url,
+            "-c", "copy",
+            "-mpegts_flags", "+resend_headers",
+            "-f", "mpegts",
+            "pipe:1",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=stderr_f,
+        )
+    except Exception:
+        stderr_f.close()
+        raise
     append_app_log(f"hdhr/{channel_id}: conversion ffmpeg started immediately (pid={proc.pid})", "debug")
+    services.register_hdhr_proc(channel_id, proc)
 
     async def generate():
         disconnect_check = asyncio.create_task(request.is_disconnected())
@@ -302,6 +307,7 @@ async def stream_channel_ts(channel_id: str, request: Request):
                 stderr_f.close()
             except Exception:
                 pass
+            services.unregister_hdhr_proc(channel_id, proc)
             append_app_log(f"hdhr/{channel_id}: TS stream ended", "debug")
 
     return StreamingResponse(

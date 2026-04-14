@@ -22,6 +22,32 @@ _sessions: dict[str, ChannelSession] = {}
 _user_stopped: set[str] = set()
 _starting: set[str] = set()
 
+_hdhr_procs: dict[str, set] = {}
+
+
+def register_hdhr_proc(channel_id: str, proc) -> None:
+    """Register a conversion ffmpeg proc so it can be killed when the channel stops."""
+    _hdhr_procs.setdefault(channel_id, set()).add(proc)
+
+
+def unregister_hdhr_proc(channel_id: str, proc) -> None:
+    """Remove a conversion ffmpeg proc from the registry (called on clean exit)."""
+    procs = _hdhr_procs.get(channel_id)
+    if procs:
+        procs.discard(proc)
+
+
+def _kill_hdhr_procs(channel_id: str) -> None:
+    """Terminate all active conversion ffmpeg procs for a channel."""
+    procs = _hdhr_procs.pop(channel_id, set())
+    for p in procs:
+        try:
+            p.terminate()
+        except Exception:
+            pass
+    if procs:
+        append_app_log(f"channel {channel_id}: killed {len(procs)} conversion ffmpeg(s)", "debug")
+
 
 # ------------------------------------------------------------------ #
 # Bulk start / stop (service-level)                                   #
@@ -43,6 +69,7 @@ async def stop_all_channels() -> None:
     if ids:
         append_app_log(f"stopping all channels: {ids}", "debug")
     for cid in ids:
+        _kill_hdhr_procs(cid)
         session = _sessions.pop(cid, None)
         if session:
             await session.stop()
@@ -90,6 +117,7 @@ async def start_channel(channel_id: str) -> str:
 
 async def stop_channel(channel_id: str) -> None:
     """Stop a channel session and remove it."""
+    _kill_hdhr_procs(channel_id)
     session = _sessions.pop(channel_id, None)
     if session:
         await session.stop()

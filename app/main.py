@@ -98,13 +98,13 @@ async def lifespan(app: FastAPI):
     if not state.ffmpeg_settings:
         state.ffmpeg_settings = FFmpegSettings()
         _dirty = True
-    if getattr(state.ffmpeg_settings, "channel_idle_shutdown_seconds", 0) <= 60:
+    if not getattr(state.ffmpeg_settings, "channel_idle_shutdown_seconds", None):
         state.ffmpeg_settings.channel_idle_shutdown_seconds = 300
         _dirty = True
-    if getattr(state.ffmpeg_settings, "hls_time", 2) >= 2:
+    if not getattr(state.ffmpeg_settings, "hls_time", None):
         state.ffmpeg_settings.hls_time = 1
         _dirty = True
-    if getattr(state.ffmpeg_settings, "hls_list_size", 10) <= 10:
+    if not getattr(state.ffmpeg_settings, "hls_list_size", None):
         state.ffmpeg_settings.hls_list_size = 15
         _dirty = True
     if _dirty:
